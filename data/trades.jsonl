@@ -1,0 +1,5 @@
+{"time":"2026-04-21T18:53:43Z","side":"BUY","entry":"85.4500","exit":"84.7600","pnl_usdt":"0.8142","balance":"0.0000","rsi":"44.4444","ema_gap":"-0.0028","volatility":"0.0050","exit_reason":"STOP_LOSS"}
+{"time":"2026-04-21T19:02:06Z","side":"BUY","entry":"85.1800","exit":"85.2900","pnl_usdt":"-0.1287","balance":"0.0000","rsi":"53.8462","ema_gap":"-0.0006","volatility":"0.0084","exit_reason":"INDICATOR_FLIP"}
+{"time":"2026-04-22T03:09:08Z","side":"BUY","entry":"87.3900","exit":"87.5100","pnl_usdt":"-0.1368","balance":"0.0000","rsi":"50.0000","ema_gap":"-0.0022","volatility":"0.0050","exit_reason":"INDICATOR_FLIP"}
+{"time":"2026-04-22T03:15:48Z","side":"SELL","entry":"87.6800","exit":"87.7900","pnl_usdt":"-0.1254","balance":"0.0000","rsi":"47.0588","ema_gap":"0.0174","volatility":"0.0589","exit_reason":"INDICATOR_FLIP"}
+{"time":"2026-04-22T03:31:18Z","side":"SELL","entry":"87.4200","exit":"87.3800","pnl_usdt":"0.0460","balance":"0.0000","rsi":"46.9027","ema_gap":"0.0211","volatility":"0.0619","exit_reason":"INDICATOR_FLIP"}
