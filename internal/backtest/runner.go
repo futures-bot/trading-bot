@@ -44,12 +44,16 @@ func (r *Runner) Run(filePath string) error {
 	var candles []domain.Candle
 
 	scanner := bufio.NewScanner(file)
+	var totalTicks int
+	var lastPrice decimal.Decimal
 	for scanner.Scan() {
+		totalTicks++
 		var data HistoricalData
 		if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
 			log.Printf("Failed to unmarshal historical data: %v", err)
 			continue
 		}
+		lastPrice = data.Price
 
 		candle := domain.Candle{
 			Open:  data.Price,
@@ -89,6 +93,11 @@ func (r *Runner) Run(filePath string) error {
 				log.Printf("Opened %s position at %s", signal, data.Price)
 			}
 		} else {
+			// Only log every 1000 ticks so we don't spam
+			if totalTicks%1000 == 0 {
+				log.Printf("Tick %d: Price %v | Position %s at %v | Still waiting for exit...",
+					totalTicks, data.Price, r.currentPosition.Side, r.currentPosition.Price)
+			}
 			exit, reason := r.positionManager.Evaluate(data.Price)
 			if exit {
 				profit := data.Price.Sub(r.currentPosition.Price).Mul(r.currentPosition.Quantity)
@@ -104,6 +113,14 @@ func (r *Runner) Run(filePath string) error {
 
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+
+	log.Printf("--- Backtest Results ---")
+	log.Printf("Total Ticks Processed: %d", totalTicks)
+	log.Printf("Final Balance: %v", r.positionManager.Balance())
+	if r.currentPosition != nil {
+		log.Printf("Position still OPEN: %s at %v (Current Price: %v)",
+			r.currentPosition.Side, r.currentPosition.Price, lastPrice)
 	}
 
 	return nil

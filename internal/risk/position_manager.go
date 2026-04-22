@@ -111,20 +111,24 @@ func (pm *PositionManager) Evaluate(currentPrice decimal.Decimal) (exit bool, re
 		profit = pm.currentPosition.Price.Sub(currentPrice)
 	}
 
-	pnlPct := profit.Div(pm.currentPosition.Price)
+	pnlRatio := profit.Div(pm.currentPosition.Price)
+
+	takeProfitRatio := pm.takeProfitPct.Div(decimal.NewFromInt(100))
+	stopLossRatio := pm.stopLossPct.Div(decimal.NewFromInt(100))
 
 	if pm.currentPosition.Side == string(domain.SignalBuy) {
-		if pnlPct.GreaterThanOrEqual(pm.takeProfitPct) {
+		if pnlRatio.GreaterThanOrEqual(takeProfitRatio) {
 			return true, "TAKE_PROFIT"
 		}
-		if pnlPct.LessThanOrEqual(pm.stopLossPct.Neg()) {
+		if pnlRatio.LessThanOrEqual(stopLossRatio.Neg()) {
 			return true, "STOP_LOSS"
 		}
-	} else {
-		if pnlPct.GreaterThanOrEqual(pm.takeProfitPct) {
+	} else { // SELL
+		if pnlRatio.GreaterThanOrEqual(takeProfitRatio) {
 			return true, "TAKE_PROFIT"
 		}
-		if pnlPct.LessThanOrEqual(pm.stopLossPct.Neg()) {
+
+		if pnlRatio.LessThanOrEqual(stopLossRatio.Neg()) {
 			return true, "STOP_LOSS"
 		}
 	}
