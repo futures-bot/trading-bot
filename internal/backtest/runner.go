@@ -57,7 +57,13 @@ func (r *Runner) Run(filePath string) error {
 			Low:   data.Price,
 			Close: data.Price,
 		}
+		const maxWindow = 200 // More than enough for RSI/EMA stability
 		candles = append(candles, candle)
+
+		if len(candles) > maxWindow {
+			// Keep only the most recent 'maxWindow' elements
+			candles = candles[1:]
+		}
 
 		const warmupPeriod = 20
 		if len(candles) < warmupPeriod {
