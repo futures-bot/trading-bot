@@ -1,5 +1,6 @@
 symbol: "SOLUSDT"
 leverage: 10
+paper_balance: 1000.0
 session_budget: 10.0
 ema_fast: 12
 ema_slow: 26

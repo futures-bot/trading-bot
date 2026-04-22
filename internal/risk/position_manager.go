@@ -92,6 +92,12 @@ func (pm *PositionManager) Balance() decimal.Decimal {
 	return pm.balance
 }
 
+func (pm *PositionManager) UpdateBalance(profit decimal.Decimal) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.balance = pm.balance.Add(profit)
+}
+
 func (pm *PositionManager) Evaluate(currentPrice decimal.Decimal) (exit bool, reason string) {
 	pm.mutex.RLock()
 	defer pm.mutex.RUnlock()

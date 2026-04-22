@@ -59,6 +59,12 @@ func (r *Runner) Run(filePath string) error {
 		}
 		candles = append(candles, candle)
 
+		const warmupPeriod = 20
+		if len(candles) < warmupPeriod {
+			log.Printf("Warm-up period: %d/%d price points collected", len(candles), warmupPeriod)
+			continue
+		}
+
 		signal := r.strategy.Calculate(candles)
 
 		if r.currentPosition == nil {
@@ -84,6 +90,7 @@ func (r *Runner) Run(filePath string) error {
 					profit = r.currentPosition.Price.Sub(data.Price).Mul(r.currentPosition.Quantity)
 				}
 				log.Printf("Closed position at %s for a profit of %s. Reason: %s", data.Price, profit, reason)
+				r.positionManager.UpdateBalance(profit)
 				r.currentPosition = nil
 			}
 		}
