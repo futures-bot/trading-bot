@@ -19,10 +19,12 @@ const (
 )
 
 type Position struct {
-	Symbol   string
-	Side     string
-	Quantity decimal.Decimal
-	Price    decimal.Decimal
+	Symbol          string
+	Side            string
+	Quantity        decimal.Decimal
+	Price           decimal.Decimal
+	StopLossPrice   decimal.Decimal
+	TakeProfitPrice decimal.Decimal
 }
 
 type Order struct {

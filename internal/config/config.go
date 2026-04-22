@@ -20,6 +20,8 @@ type Config struct {
 	ConfirmationCount    int     `yaml:"confirmation_count"`
 	MinProfitForFlipExit float64 `yaml:"min_profit_for_flip_exit"`
 	PaperBalance         float64 `yaml:"paper_balance"`
+	LossCooldown         int     `yaml:"loss_cooldown"`
+	WinCooldown          int     `yaml:"win_cooldown"`
 }
 
 // LoadConfig reads the configuration from the given file path.

@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"log"
-	"time"
+
 	"trading-bot/internal/backtest"
 	"trading-bot/internal/config"
 	"trading-bot/internal/risk"
@@ -35,10 +35,11 @@ func runBacktest(filePath string) {
 	}
 
 	tradeTracker := strategy.NewTradeTracker(cfg.TakeProfitPct, cfg.StopLossPct, cfg.ConfirmationCount, cfg.MinProfitForFlipExit)
-	strategy := strategy.NewEMACrossover(cfg.EMAFast, cfg.EMASlow, 5*time.Minute, tradeTracker)
+	strategy := strategy.NewEMACrossover(cfg.EMAFast, cfg.EMASlow, 0, tradeTracker)
+
 	positionManager := risk.NewBacktestPositionManager(cfg)
 
-	backtestRunner := backtest.NewRunner(strategy, positionManager)
+	backtestRunner := backtest.NewRunner(strategy, positionManager, cfg)
 
 	if err := backtestRunner.Run(filePath); err != nil {
 		log.Fatalf("Backtest failed: %v", err)

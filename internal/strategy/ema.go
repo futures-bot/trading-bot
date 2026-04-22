@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"log"
 	"time"
 
 	"trading-bot/internal/domain"
@@ -22,6 +23,9 @@ type EMACrossover struct {
 	cooldown      time.Duration
 	tradeTracker  *TradeTracker
 	lastSignal    domain.Signal
+	ticks         int
+	previousRSI   decimal.Decimal
+	priceHistory  []decimal.Decimal
 }
 
 // NewEMACrossover creates a new EMACrossover strategy.
@@ -63,11 +67,6 @@ func (s *EMACrossover) Calculate(candles []domain.Candle) domain.Signal {
 		s.prices = append(s.prices, c.Close)
 	}
 
-	// Check if we are in a cooldown period.
-	if time.Since(s.lastTradeTime) < s.cooldown {
-		return domain.SignalHold
-	}
-
 	// We need enough data to calculate the longest EMA.
 	if len(s.prices) < s.slowPeriod {
 		return domain.SignalHold
@@ -85,6 +84,11 @@ func (s *EMACrossover) Calculate(candles []domain.Candle) domain.Signal {
 	s.emadiff = s.fastEMA.Sub(s.slowEMA)
 	s.volatility = calculateVolatility(s.prices, 20)
 
+	s.ticks++
+	if s.ticks%500 == 0 {
+		log.Printf("RSI: %s | Price: %s | EMA: %s", s.rsi, s.prices[len(s.prices)-1], s.slowEMA)
+	}
+
 	if s.fastEMA.IsZero() || s.slowEMA.IsZero() {
 		return domain.SignalHold
 	}
@@ -97,15 +101,32 @@ func (s *EMACrossover) Calculate(candles []domain.Candle) domain.Signal {
 		s.lastSignal = domain.SignalSell
 	}
 
-	if s.tradeTracker.ConfirmSignal(s.lastSignal) {
-		// RSI Filter
-		if s.lastSignal == domain.SignalBuy && s.rsi.GreaterThan(decimal.NewFromInt(55)) {
-			return domain.SignalBuy
-		}
-		if s.lastSignal == domain.SignalSell && s.rsi.LessThan(decimal.NewFromInt(45)) {
-			return domain.SignalSell
-		}
+	s.priceHistory = append(s.priceHistory, s.prices[len(s.prices)-1])
+	if len(s.priceHistory) > 10 {
+		s.priceHistory = s.priceHistory[1:]
 	}
+
+	// Volatility Gate
+	if len(s.priceHistory) < 10 {
+		return domain.SignalHold
+	}
+	price10TicksAgo := s.priceHistory[0]
+	if s.prices[len(s.prices)-1].Sub(price10TicksAgo).Abs().LessThan(s.prices[len(s.prices)-1].Mul(decimal.NewFromFloat(0.0002))) {
+		return domain.SignalHold
+	}
+
+	// RSI Cross Logic
+	if s.previousRSI.GreaterThan(decimal.NewFromInt(60)) && s.rsi.LessThan(decimal.NewFromInt(60)) {
+		s.previousRSI = s.rsi
+		return domain.SignalSell
+	}
+
+	if s.previousRSI.LessThan(decimal.NewFromInt(40)) && s.rsi.GreaterThan(decimal.NewFromInt(40)) {
+		s.previousRSI = s.rsi
+		return domain.SignalBuy
+	}
+
+	s.previousRSI = s.rsi
 
 	return domain.SignalHold
 }

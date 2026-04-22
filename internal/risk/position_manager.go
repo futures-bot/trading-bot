@@ -98,6 +98,20 @@ func (pm *PositionManager) UpdateBalance(profit decimal.Decimal) {
 	pm.balance = pm.balance.Add(profit)
 }
 
+func (pm *PositionManager) GetTakeProfitPct() decimal.Decimal {
+	return pm.takeProfitPct
+}
+
+func (pm *PositionManager) GetStopLossPct() decimal.Decimal {
+	return pm.stopLossPct
+}
+
+func (pm *PositionManager) SetCurrentPosition(p *domain.Position) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
+	pm.currentPosition = p
+}
+
 func (pm *PositionManager) Evaluate(currentPrice decimal.Decimal) (exit bool, reason string) {
 	pm.mutex.RLock()
 	defer pm.mutex.RUnlock()
@@ -106,24 +120,21 @@ func (pm *PositionManager) Evaluate(currentPrice decimal.Decimal) (exit bool, re
 		return false, ""
 	}
 
-	takeProfitRatio := pm.takeProfitPct.Div(decimal.NewFromInt(100))
-	stopLossRatio := pm.stopLossPct.Div(decimal.NewFromInt(100))
+	p := pm.currentPosition
 
-	if pm.currentPosition.Side == string(domain.SignalBuy) {
-		pnlRatio := currentPrice.Sub(pm.currentPosition.Price).Div(pm.currentPosition.Price)
-		if pnlRatio.GreaterThanOrEqual(takeProfitRatio) {
+	if p.Side == string(domain.SignalBuy) {
+		if currentPrice.GreaterThanOrEqual(p.TakeProfitPrice) {
 			return true, "TAKE_PROFIT"
 		}
-		if pnlRatio.LessThanOrEqual(stopLossRatio.Neg()) {
+		if currentPrice.LessThanOrEqual(p.StopLossPrice) {
 			return true, "STOP_LOSS"
 		}
-	} else { // SELL
-		pnlRatio := currentPrice.Sub(pm.currentPosition.Price).Div(pm.currentPosition.Price)
+	} else if p.Side == string(domain.SignalSell) {
 
-		if pnlRatio.GreaterThanOrEqual(stopLossRatio) { // If price rises for a short, it's a loss
+		if currentPrice.GreaterThanOrEqual(p.StopLossPrice) {
 			return true, "STOP_LOSS"
 		}
-		if pnlRatio.LessThanOrEqual(takeProfitRatio.Neg()) { // If price drops for a short, it's a profit
+		if currentPrice.LessThanOrEqual(p.TakeProfitPrice) {
 			return true, "TAKE_PROFIT"
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"trading-bot/internal/config"
 	"trading-bot/internal/domain"
 	"trading-bot/internal/risk"
 	"trading-bot/internal/strategy"
@@ -17,13 +18,15 @@ type Runner struct {
 	strategy        strategy.Strategy
 	positionManager *risk.PositionManager
 	currentPosition *domain.Position
+	cfg             *config.Config
 }
 
 // NewRunner creates a new backtest runner.
-func NewRunner(strategy strategy.Strategy, positionManager *risk.PositionManager) *Runner {
+func NewRunner(strategy strategy.Strategy, positionManager *risk.PositionManager, cfg *config.Config) *Runner {
 	return &Runner{
 		strategy:        strategy,
 		positionManager: positionManager,
+		cfg:             cfg,
 	}
 }
 
@@ -35,6 +38,7 @@ type HistoricalData struct {
 
 // Run executes the backtest.
 func (r *Runner) Run(filePath string) error {
+	log.Printf("VERSION 2.0 - BOOTING")
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -44,7 +48,7 @@ func (r *Runner) Run(filePath string) error {
 	var candles []domain.Candle
 
 	scanner := bufio.NewScanner(file)
-	var totalTicks int
+	var totalTicks, totalTrades, wins, losses, lastTradeTick int
 	var lastPrice decimal.Decimal
 	for scanner.Scan() {
 		totalTicks++
@@ -71,33 +75,43 @@ func (r *Runner) Run(filePath string) error {
 
 		const warmupPeriod = 20
 		if len(candles) < warmupPeriod {
-			log.Printf("Warm-up period: %d/%d price points collected", len(candles), warmupPeriod)
 			continue
 		}
 
 		signal := r.strategy.Calculate(candles)
 
 		if r.currentPosition == nil {
-			if signal == domain.SignalBuy || signal == domain.SignalSell {
+			if totalTicks > lastTradeTick && (signal == domain.SignalBuy || signal == domain.SignalSell) {
 				qty, err := r.positionManager.CalculatePositionSize(data.Price, r.positionManager.Balance())
 				if err != nil {
 					log.Printf("Failed to calculate position size: %v", err)
 					continue
 				}
-				r.currentPosition = &domain.Position{
-					Symbol:   "XRPUSDT", //TODO: parameterize
-					Side:     string(signal),
-					Quantity: qty,
-					Price:    data.Price,
+				stopLossPct := r.positionManager.GetStopLossPct()
+				takeProfitPct := r.positionManager.GetTakeProfitPct()
+
+				var stopLossPrice, takeProfitPrice decimal.Decimal
+				if signal == domain.SignalBuy {
+					stopLossPrice = data.Price.Mul(decimal.NewFromFloat(1).Sub(stopLossPct.Div(decimal.NewFromInt(100))))
+					takeProfitPrice = data.Price.Mul(decimal.NewFromFloat(1).Add(takeProfitPct.Div(decimal.NewFromInt(100))))
+				} else {
+					stopLossPrice = data.Price.Mul(decimal.NewFromFloat(1).Add(stopLossPct.Div(decimal.NewFromInt(100))))
+					takeProfitPrice = data.Price.Mul(decimal.NewFromFloat(1).Sub(takeProfitPct.Div(decimal.NewFromInt(100))))
 				}
+
+				r.currentPosition = &domain.Position{
+					Symbol:          r.cfg.Symbol,
+					Side:            string(signal),
+					Quantity:        qty,
+					Price:           data.Price,
+					StopLossPrice:   stopLossPrice,
+					TakeProfitPrice: takeProfitPrice,
+				}
+				r.positionManager.SetCurrentPosition(r.currentPosition)
 				log.Printf("Opened %s position at %s", signal, data.Price)
 			}
 		} else {
-			// Only log every 1000 ticks so we don't spam
-			if totalTicks%1000 == 0 {
-				log.Printf("Tick %d: Price %v | Position %s at %v | Still waiting for exit...",
-					totalTicks, data.Price, r.currentPosition.Side, r.currentPosition.Price)
-			}
+
 			exit, reason := r.positionManager.Evaluate(data.Price)
 			if exit {
 				profit := data.Price.Sub(r.currentPosition.Price).Mul(r.currentPosition.Quantity)
@@ -107,6 +121,17 @@ func (r *Runner) Run(filePath string) error {
 				log.Printf("Closed position at %s for a profit of %s. Reason: %s", data.Price, profit, reason)
 				r.positionManager.UpdateBalance(profit)
 				r.currentPosition = nil
+				r.positionManager.SetCurrentPosition(nil)
+				totalTrades++
+				if profit.IsPositive() {
+					wins++
+					lastTradeTick = totalTicks + r.cfg.WinCooldown
+				} else if profit.IsNegative() {
+					losses++
+					lastTradeTick = totalTicks + r.cfg.LossCooldown
+				} else {
+					lastTradeTick = totalTicks
+				}
 			}
 		}
 	}
@@ -117,6 +142,9 @@ func (r *Runner) Run(filePath string) error {
 
 	log.Printf("--- Backtest Results ---")
 	log.Printf("Total Ticks Processed: %d", totalTicks)
+	log.Printf("Total Trades Executed: %d", totalTrades)
+	log.Printf("Wins: %d", wins)
+	log.Printf("Losses: %d", losses)
 	log.Printf("Final Balance: %v", r.positionManager.Balance())
 	if r.currentPosition != nil {
 		log.Printf("Position still OPEN: %s at %v (Current Price: %v)",
