@@ -106,17 +106,11 @@ func (pm *PositionManager) Evaluate(currentPrice decimal.Decimal) (exit bool, re
 		return false, ""
 	}
 
-	profit := currentPrice.Sub(pm.currentPosition.Price)
-	if pm.currentPosition.Side == string(domain.SignalSell) {
-		profit = pm.currentPosition.Price.Sub(currentPrice)
-	}
-
-	pnlRatio := profit.Div(pm.currentPosition.Price)
-
 	takeProfitRatio := pm.takeProfitPct.Div(decimal.NewFromInt(100))
 	stopLossRatio := pm.stopLossPct.Div(decimal.NewFromInt(100))
 
 	if pm.currentPosition.Side == string(domain.SignalBuy) {
+		pnlRatio := currentPrice.Sub(pm.currentPosition.Price).Div(pm.currentPosition.Price)
 		if pnlRatio.GreaterThanOrEqual(takeProfitRatio) {
 			return true, "TAKE_PROFIT"
 		}
@@ -124,12 +118,13 @@ func (pm *PositionManager) Evaluate(currentPrice decimal.Decimal) (exit bool, re
 			return true, "STOP_LOSS"
 		}
 	} else { // SELL
-		if pnlRatio.GreaterThanOrEqual(takeProfitRatio) {
-			return true, "TAKE_PROFIT"
-		}
+		pnlRatio := currentPrice.Sub(pm.currentPosition.Price).Div(pm.currentPosition.Price)
 
-		if pnlRatio.LessThanOrEqual(stopLossRatio.Neg()) {
+		if pnlRatio.GreaterThanOrEqual(stopLossRatio) { // If price rises for a short, it's a loss
 			return true, "STOP_LOSS"
+		}
+		if pnlRatio.LessThanOrEqual(takeProfitRatio.Neg()) { // If price drops for a short, it's a profit
+			return true, "TAKE_PROFIT"
 		}
 	}
 
