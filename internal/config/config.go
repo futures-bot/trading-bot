@@ -17,6 +17,8 @@ type Config struct {
 	MinEMAGap            float64 `yaml:"min_ema_gap"`
 	TakeProfitPct        float64 `yaml:"take_profit_pct"`
 	StopLossPct          float64 `yaml:"stop_loss_pct"`
+	BreakEvenTriggerPct  float64 `yaml:"break_even_trigger_pct"`
+	TrailDistancePct     float64 `yaml:"trail_distance_pct"`
 	ConfirmationCount    int     `yaml:"confirmation_count"`
 	MinProfitForFlipExit float64 `yaml:"min_profit_for_flip_exit"`
 	PaperBalance         float64 `yaml:"paper_balance"`

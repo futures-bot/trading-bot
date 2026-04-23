@@ -15,41 +15,48 @@ import (
 var ErrInsufficientFunds = errors.New("insufficient funds")
 
 // PositionManager manages the bot's position and balance.
+
 type PositionManager struct {
-	mutex           sync.RWMutex
-	balance         decimal.Decimal
-	maxRiskPerTrade decimal.Decimal
-	currentPosition *domain.Position
-	leverage        decimal.Decimal
-	sessionBudget   float64
-	restClient      *exchange.RestClient
-	takeProfitPct   decimal.Decimal
-	stopLossPct     decimal.Decimal
+	mutex               sync.RWMutex
+	balance             decimal.Decimal
+	maxRiskPerTrade     decimal.Decimal
+	currentPosition     *domain.Position
+	leverage            decimal.Decimal
+	sessionBudget       float64
+	restClient          *exchange.RestClient
+	takeProfitPct       decimal.Decimal
+	stopLossPct         decimal.Decimal
+	breakEvenTriggerPct decimal.Decimal
+	trailDistancePct    decimal.Decimal
 }
 
 // NewPositionManager creates a new PositionManager.
-func NewPositionManager(balance decimal.Decimal, maxRiskPerTrade decimal.Decimal, leverage int, sessionBudget float64, restClient *exchange.RestClient, takeProfitPct, stopLossPct float64) *PositionManager {
+func NewPositionManager(balance decimal.Decimal, maxRiskPerTrade decimal.Decimal, leverage int, sessionBudget float64, restClient *exchange.RestClient, takeProfitPct, stopLossPct, breakEvenTriggerPct, trailDistancePct float64) *PositionManager {
 	return &PositionManager{
-		balance:         balance,
-		maxRiskPerTrade: maxRiskPerTrade,
-		leverage:        decimal.NewFromInt(int64(leverage)),
-		sessionBudget:   sessionBudget,
-		restClient:      restClient,
-		takeProfitPct:   decimal.NewFromFloat(takeProfitPct),
-		stopLossPct:     decimal.NewFromFloat(stopLossPct),
+		balance:             balance,
+		maxRiskPerTrade:     maxRiskPerTrade,
+		leverage:            decimal.NewFromInt(int64(leverage)),
+		sessionBudget:       sessionBudget,
+		restClient:          restClient,
+		takeProfitPct:       decimal.NewFromFloat(takeProfitPct),
+		stopLossPct:         decimal.NewFromFloat(stopLossPct),
+		breakEvenTriggerPct: decimal.NewFromFloat(breakEvenTriggerPct),
+		trailDistancePct:    decimal.NewFromFloat(trailDistancePct),
 	}
 }
 
 // NewBacktestPositionManager creates a new PositionManager for backtesting.
 func NewBacktestPositionManager(cfg *config.Config) *PositionManager {
 	return &PositionManager{
-		balance:         decimal.NewFromFloat(cfg.PaperBalance),
-		maxRiskPerTrade: decimal.NewFromFloat(0.1), // Example value
-		leverage:        decimal.NewFromInt(int64(cfg.Leverage)),
-		sessionBudget:   cfg.PaperBalance,
-		restClient:      &exchange.RestClient{StepSize: decimal.NewFromFloat(0.1)}, // Mock RestClient with default StepSize
-		takeProfitPct:   decimal.NewFromFloat(cfg.TakeProfitPct),
-		stopLossPct:     decimal.NewFromFloat(cfg.StopLossPct),
+		balance:             decimal.NewFromFloat(cfg.PaperBalance),
+		maxRiskPerTrade:     decimal.NewFromFloat(0.1), // Example value
+		leverage:            decimal.NewFromInt(int64(cfg.Leverage)),
+		sessionBudget:       cfg.PaperBalance,
+		restClient:          &exchange.RestClient{StepSize: decimal.NewFromFloat(0.1)}, // Mock RestClient with default StepSize
+		takeProfitPct:       decimal.NewFromFloat(cfg.TakeProfitPct),
+		stopLossPct:         decimal.NewFromFloat(cfg.StopLossPct),
+		breakEvenTriggerPct: decimal.NewFromFloat(cfg.BreakEvenTriggerPct),
+		trailDistancePct:    decimal.NewFromFloat(cfg.TrailDistancePct),
 	}
 }
 
@@ -109,12 +116,13 @@ func (pm *PositionManager) GetStopLossPct() decimal.Decimal {
 func (pm *PositionManager) SetCurrentPosition(p *domain.Position) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
+	p.HighestPrice = p.Price
 	pm.currentPosition = p
 }
 
-func (pm *PositionManager) Evaluate(currentPrice decimal.Decimal) (exit bool, reason string) {
-	pm.mutex.RLock()
-	defer pm.mutex.RUnlock()
+func (pm *PositionManager) Evaluate(currentPrice, rsi decimal.Decimal) (exit bool, reason string) {
+	pm.mutex.Lock()
+	defer pm.mutex.Unlock()
 
 	if pm.currentPosition == nil {
 		return false, ""
@@ -122,21 +130,68 @@ func (pm *PositionManager) Evaluate(currentPrice decimal.Decimal) (exit bool, re
 
 	p := pm.currentPosition
 
+	var currentProfitPct decimal.Decimal
+	if p.Side == string(domain.SignalBuy) {
+		currentProfitPct = currentPrice.Sub(p.Price).Div(p.Price)
+	} else {
+		currentProfitPct = p.Price.Sub(currentPrice).Div(p.Price)
+	}
+
+	// Break-even logic
+	if !p.IsBreakEvenSet && currentProfitPct.GreaterThanOrEqual(pm.breakEvenTriggerPct) {
+		p.StopLossPrice = p.Price
+		p.IsBreakEvenSet = true
+		log.Println("[SAFETY] Move StopLoss to Break-Even")
+	}
+
+	// Trailing stop logic
+	if p.IsBreakEvenSet {
+		if p.Side == string(domain.SignalBuy) {
+			if currentPrice.GreaterThan(p.HighestPrice) {
+				p.HighestPrice = currentPrice
+				newStopLoss := p.HighestPrice.Mul(decimal.NewFromFloat(1).Sub(pm.trailDistancePct))
+				if newStopLoss.GreaterThan(p.StopLossPrice) {
+					p.StopLossPrice = newStopLoss
+				}
+			}
+		} else { // SignalSell
+			if currentPrice.LessThan(p.HighestPrice) {
+				p.HighestPrice = currentPrice
+				newStopLoss := p.HighestPrice.Mul(decimal.NewFromFloat(1).Add(pm.trailDistancePct))
+				if newStopLoss.LessThan(p.StopLossPrice) {
+					p.StopLossPrice = newStopLoss
+				}
+			}
+		}
+	}
+
 	if p.Side == string(domain.SignalBuy) {
 		if currentPrice.GreaterThanOrEqual(p.TakeProfitPrice) {
 			return true, "TAKE_PROFIT"
 		}
 		if currentPrice.LessThanOrEqual(p.StopLossPrice) {
+			if p.IsBreakEvenSet {
+				return true, "BREAK_EVEN"
+			}
 			return true, "STOP_LOSS"
 		}
 	} else if p.Side == string(domain.SignalSell) {
-
 		if currentPrice.GreaterThanOrEqual(p.StopLossPrice) {
+			if p.IsBreakEvenSet {
+				return true, "BREAK_EVEN"
+			}
 			return true, "STOP_LOSS"
 		}
 		if currentPrice.LessThanOrEqual(p.TakeProfitPrice) {
 			return true, "TAKE_PROFIT"
 		}
+	}
+
+	// RSI Exhaustion
+	if p.Side == string(domain.SignalBuy) && rsi.GreaterThan(decimal.NewFromInt(70)) {
+		return true, "RSI_EXHAUSTION"
+	} else if p.Side == string(domain.SignalSell) && rsi.LessThan(decimal.NewFromInt(30)) {
+		return true, "RSI_EXHAUSTION"
 	}
 
 	return false, ""

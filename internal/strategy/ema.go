@@ -61,7 +61,7 @@ func (s *EMACrossover) GetSignal() domain.Signal {
 }
 
 // Calculate determines a trading signal based on the EMA crossover.
-func (s *EMACrossover) Calculate(candles []domain.Candle) domain.Signal {
+func (s *EMACrossover) Calculate(candles []domain.Candle) (domain.Signal, decimal.Decimal) {
 	s.prices = []decimal.Decimal{}
 	for _, c := range candles {
 		s.prices = append(s.prices, c.Close)
@@ -69,7 +69,7 @@ func (s *EMACrossover) Calculate(candles []domain.Candle) domain.Signal {
 
 	// We need enough data to calculate the longest EMA.
 	if len(s.prices) < s.slowPeriod {
-		return domain.SignalHold
+		return domain.SignalHold, s.rsi
 	}
 
 	// Trim prices to the required length to avoid memory leaks.
@@ -90,7 +90,7 @@ func (s *EMACrossover) Calculate(candles []domain.Candle) domain.Signal {
 	}
 
 	if s.fastEMA.IsZero() || s.slowEMA.IsZero() {
-		return domain.SignalHold
+		return domain.SignalHold, s.rsi
 	}
 
 	// Check for crossover.
@@ -108,27 +108,27 @@ func (s *EMACrossover) Calculate(candles []domain.Candle) domain.Signal {
 
 	// Volatility Gate
 	if len(s.priceHistory) < 10 {
-		return domain.SignalHold
+		return domain.SignalHold, s.rsi
 	}
 	price10TicksAgo := s.priceHistory[0]
 	if s.prices[len(s.prices)-1].Sub(price10TicksAgo).Abs().LessThan(s.prices[len(s.prices)-1].Mul(decimal.NewFromFloat(0.0002))) {
-		return domain.SignalHold
+		return domain.SignalHold, s.rsi
 	}
 
 	// RSI Cross Logic
 	if s.previousRSI.GreaterThan(decimal.NewFromInt(60)) && s.rsi.LessThan(decimal.NewFromInt(60)) {
 		s.previousRSI = s.rsi
-		return domain.SignalSell
+		return domain.SignalSell, s.rsi
 	}
 
 	if s.previousRSI.LessThan(decimal.NewFromInt(40)) && s.rsi.GreaterThan(decimal.NewFromInt(40)) {
 		s.previousRSI = s.rsi
-		return domain.SignalBuy
+		return domain.SignalBuy, s.rsi
 	}
 
 	s.previousRSI = s.rsi
 
-	return domain.SignalHold
+	return domain.SignalHold, s.rsi
 }
 
 // calculateEMA calculates the Exponential Moving Average.

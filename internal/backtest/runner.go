@@ -78,7 +78,7 @@ func (r *Runner) Run(filePath string) error {
 			continue
 		}
 
-		signal := r.strategy.Calculate(candles)
+		signal, rsi := r.strategy.Calculate(candles)
 
 		if r.currentPosition == nil {
 			if totalTicks > lastTradeTick && (signal == domain.SignalBuy || signal == domain.SignalSell) {
@@ -112,16 +112,15 @@ func (r *Runner) Run(filePath string) error {
 			}
 		} else {
 
-			exit, reason := r.positionManager.Evaluate(data.Price)
+			exit, reason := r.positionManager.Evaluate(data.Price, rsi)
 			if exit {
 				profit := data.Price.Sub(r.currentPosition.Price).Mul(r.currentPosition.Quantity)
 				if r.currentPosition.Side == string(domain.SignalSell) {
 					profit = r.currentPosition.Price.Sub(data.Price).Mul(r.currentPosition.Quantity)
 				}
-				log.Printf("Closed position at %s for a profit of %s. Reason: %s", data.Price, profit, reason)
+				log.Printf("[EXIT] Closed at price %s (Reason: %s)", data.Price, reason)
 				r.positionManager.UpdateBalance(profit)
 				r.currentPosition = nil
-				r.positionManager.SetCurrentPosition(nil)
 				totalTrades++
 				if profit.IsPositive() {
 					wins++
@@ -146,6 +145,11 @@ func (r *Runner) Run(filePath string) error {
 	log.Printf("Wins: %d", wins)
 	log.Printf("Losses: %d", losses)
 	log.Printf("Final Balance: %v", r.positionManager.Balance())
+	if losses > 0 {
+		log.Printf("Profit Factor: %.2f", float64(wins)/float64(losses))
+	} else {
+		log.Printf("Profit Factor: N/A (0 Losses)")
+	}
 	if r.currentPosition != nil {
 		log.Printf("Position still OPEN: %s at %v (Current Price: %v)",
 			r.currentPosition.Side, r.currentPosition.Price, lastPrice)

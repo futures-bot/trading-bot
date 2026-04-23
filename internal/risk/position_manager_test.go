@@ -12,7 +12,7 @@ func TestCalculatePositionSize(t *testing.T) {
 	mockRestClient := &exchange.RestClient{
 		StepSize: decimal.NewFromFloat(0.1),
 	}
-	pm := NewPositionManager(decimal.NewFromInt(1000), decimal.NewFromFloat(0.01), 10, 100.0, mockRestClient, 0.04, 0.02)
+	pm := NewPositionManager(decimal.NewFromInt(1000), decimal.NewFromFloat(0.01), 10, 100.0, mockRestClient, 0.04, 0.02, 0.001, 0.001)
 	pm.SetLeverage(10)
 
 	price := decimal.NewFromFloat(0.5)

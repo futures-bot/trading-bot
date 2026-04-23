@@ -7,7 +7,9 @@ ema_slow: 26
 min_ema_gap: 0.005
 take_profit_pct: 0.002
 stop_loss_pct: 0.0015
+break_even_trigger_pct: 0.0004
+trail_distance_pct: 0.0003
 loss_cooldown: 600
 win_cooldown: 200
-confirmation_count: 8
+confirmation_count: 12
 min_profit_for_flip_exit: 0.15

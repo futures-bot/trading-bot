@@ -57,6 +57,8 @@ func New(cfg *config.Config, sugar *zap.SugaredLogger, pnlLogger *logging.PnlLog
 		client.RestClient,
 		cfg.TakeProfitPct,
 		cfg.StopLossPct,
+		cfg.BreakEvenTriggerPct,
+		cfg.TrailDistancePct,
 	)
 
 	tracker := strategy.NewTradeTracker(
@@ -117,10 +119,10 @@ func (e *Engine) Run(ctx context.Context) {
 				continue
 			}
 
-			signal := e.emaStrategy.Calculate(e.candles)
+			signal, rsi := e.emaStrategy.Calculate(e.candles)
 
 			if e.tracker.InTrade() {
-				if exit, reason := e.pm.Evaluate(e.lastPrice); exit {
+				if exit, reason := e.pm.Evaluate(e.lastPrice, rsi); exit {
 					log.Printf("EXIT TRIGGER: %s reached", reason)
 					quantity, err := e.pm.CalculatePositionSize(e.lastPrice, e.availableBalance)
 					if err != nil {

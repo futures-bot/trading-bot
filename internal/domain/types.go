@@ -25,6 +25,8 @@ type Position struct {
 	Price           decimal.Decimal
 	StopLossPrice   decimal.Decimal
 	TakeProfitPrice decimal.Decimal
+	IsBreakEvenSet  bool
+	HighestPrice    decimal.Decimal
 }
 
 type Order struct {
