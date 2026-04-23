@@ -1,0 +1,2 @@
+{"time":"2026-04-23T17:57:06Z","side":"BUY","entry":"85.2500","exit":"85.2600","pnl_usdt":"0.0110","balance":"0.0000","rsi":"0.0000","ema_gap":"0.0000","volatility":"0.0000","exit_reason":"TAKE_PROFIT"}
+{"time":"2026-04-23T17:57:08Z","side":"SELL","entry":"85.2700","exit":"85.2800","pnl_usdt":"-0.0110","balance":"0.0000","rsi":"0.0000","ema_gap":"0.0000","volatility":"0.0000","exit_reason":"STOP_LOSS"}
