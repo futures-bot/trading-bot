@@ -152,3 +152,14 @@ Use a static slice of candles to verify that a known EMA cross generates the cor
 3.  **Backtest Command:**
     -   Create a new command `cmd/backtest/main.go`.
     -   This command should initialize the necessary components (strategy, risk manager) and run the backtester with a specified data file.
+
+## PHASE 8
+We are transitioning the bot into a multi-user SaaS-ready architecture. Apply these rules to all future coding:
+
+Data Isolation: All user-specific data (API keys, Configs) must be abstracted into a Store interface. We will transition from config.yaml to a Database (Postgres) soon.
+
+Event-Driven Logging: Implement an EventBus or Internal Notification System so that UI/Telegram can 'subscribe' to trade events without blocking the trading engine.
+
+Safety Interlocks: Any 'Real Money' execution must require an explicit --mode=PROD flag AND an environment variable CONFIRM_EXCHANGE_LIVE=true.
+
+Resource Management: Implement Lumberjack for log rotation immediately to protect the VM disk space.

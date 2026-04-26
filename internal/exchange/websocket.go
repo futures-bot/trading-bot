@@ -2,10 +2,10 @@ package exchange
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/adshao/go-binance/v2/futures"
-	"go.uber.org/zap"
 )
 
 // PriceUpdate represents a single price update from the exchange.
@@ -16,19 +16,17 @@ type PriceUpdate struct {
 }
 
 // WebsocketClient handles the connection to the Binance WebSocket API.
-type WebsocketClient struct {
-	logger *zap.SugaredLogger
-}
+type WebsocketClient struct{}
 
 // NewWebsocketClient creates a new WebsocketClient.
-func NewWebsocketClient(logger *zap.SugaredLogger) *WebsocketClient {
-	return &WebsocketClient{logger: logger}
+func NewWebsocketClient() *WebsocketClient {
+	return &WebsocketClient{}
 }
 
 // Start starts the WebSocket stream for the given symbol.
 func (c *WebsocketClient) Start(ctx context.Context, symbol string, priceCh chan<- PriceUpdate) {
 	wsAggTradeHandler := func(event *futures.WsAggTradeEvent) {
-		c.logger.Infow("Received aggregate trade event", "symbol", event.Symbol, "price", event.Price)
+		log.Printf("Received aggregate trade event: %+v", event)
 		priceCh <- PriceUpdate{Symbol: event.Symbol, Price: event.Price}
 	}
 
@@ -39,18 +37,18 @@ func (c *WebsocketClient) Start(ctx context.Context, symbol string, priceCh chan
 				return
 			default:
 				errHandler := func(err error) {
-					c.logger.Errorw("WebSocket error", "error", err)
+					log.Printf("WebSocket error: %v", err)
 				}
 
 				doneC, _, err := futures.WsAggTradeServe(symbol, wsAggTradeHandler, errHandler)
 				if err != nil {
-					c.logger.Errorw("Failed to connect to WebSocket", "error", err)
+					log.Printf("Failed to connect to WebSocket: %v", err)
 					time.Sleep(5 * time.Second) // Wait before trying to reconnect
 					continue
 				}
 
 				<-doneC
-				c.logger.Info("WebSocket disconnected. Attempting to reconnect...")
+				log.Print("WebSocket disconnected. Attempting to reconnect...")
 				time.Sleep(1 * time.Second) // Wait a second before trying to reconnect
 			}
 		}

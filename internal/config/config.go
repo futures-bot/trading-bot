@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -24,6 +25,10 @@ type Config struct {
 	PaperBalance         float64 `yaml:"paper_balance"`
 	LossCooldown         int     `yaml:"loss_cooldown"`
 	WinCooldown          int     `yaml:"win_cooldown"`
+	TelegramBotToken     string
+	TelegramChatID       int64
+	APIKey               string `yaml:"api_key"`
+	HTTPPort             string `yaml:"http_port"`
 }
 
 // LoadConfig reads the configuration from the given file path.
@@ -37,6 +42,16 @@ func LoadConfig(path string) (*Config, error) {
 	err = yaml.Unmarshal(data, &cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	cfg.TelegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
+	chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")
+	if chatIDStr != "" {
+		var chatID int64
+		_, err := fmt.Sscan(chatIDStr, &chatID)
+		if err == nil {
+			cfg.TelegramChatID = chatID
+		}
 	}
 
 	return &cfg, nil

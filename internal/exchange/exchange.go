@@ -2,8 +2,6 @@ package exchange
 
 import (
 	"trading-bot/internal/config"
-
-	"go.uber.org/zap"
 )
 
 // Client is a wrapper for the exchange clients.
@@ -13,9 +11,9 @@ type Client struct {
 }
 
 // New creates a new exchange client.
-func New(cfg *config.Config, logger *zap.SugaredLogger) (*Client, error) {
-	restClient := NewRestClient()
-	wsClient := NewWebsocketClient(logger)
+func New(cfg *config.Config, apiKey, apiSecret string) (*Client, error) {
+	restClient := NewRestClient(apiKey, apiSecret)
+	wsClient := NewWebsocketClient()
 
 	return &Client{
 		RestClient:      restClient,

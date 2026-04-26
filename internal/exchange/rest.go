@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"regexp"
 
 	"github.com/adshao/go-binance/v2/common"
@@ -22,11 +21,8 @@ type RestClient struct {
 }
 
 // NewRestClient creates a new RestClient.
-func NewRestClient() *RestClient {
-	apiKey := os.Getenv("BINANCE_API_KEY")
-	secretKey := os.Getenv("BINANCE_SECRET_KEY")
-
-	client := futures.NewClient(apiKey, secretKey)
+func NewRestClient(apiKey, apiSecret string) *RestClient {
+	client := futures.NewClient(apiKey, apiSecret)
 	client.BaseURL = "https://testnet.binancefuture.com"
 	return &RestClient{client: client}
 }
