@@ -240,95 +240,89 @@ setInterval(getLatestSession, 5000); // Update every 5 seconds
 
 ---
 
-## CORS & Headers
+## CORS & Real-Time Streaming
 
-The API currently has no CORS headers. If you're calling from a browser dashboard on a different domain, you'll need to either:
+The API now includes **CORS headers** and **SSE (Server-Sent Events)** for real-time data streaming:
 
-1. **Run a reverse proxy** (Cloudflare Worker, nginx)
-2. **Add CORS headers** to the API (see Cloudflare Worker section below)
-3. **Call the API from the same origin** (same domain/port)
+### CORS Headers
+
+All endpoints respond with CORS headers for cross-origin requests:
+
+```
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization
+```
+
+This allows dashboards on different domains (e.g., Vercel, localhost) to request data directly.
+
+### Server-Sent Events (SSE)
+
+For real-time updates, use the streaming endpoint:
+
+```http
+GET /api/stream
+```
+
+Response headers:
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+```
+
+**Browser example**:
+```javascript
+const eventSource = new EventSource('http://35.196.16.129:8080/api/stream');
+
+eventSource.addEventListener('message', (event) => {
+  const streamEvent = JSON.parse(event.data);
+  console.log('Event type:', streamEvent.type); // 'stats', 'sessions', or 'trades'
+  console.log('Data:', streamEvent.data);
+});
+```
+
+See [STREAMING.md](./STREAMING.md) for full documentation.
+
+### Performance
+
+- **Streaming**: 1 connection, instant updates, lower bandwidth
+- **Polling (fallback)**: GET `/api/stats`, `/api/trades`, `/api/sessions` every 5 seconds
+- **Dashboard refresh**: 5-second polling interval (can be customized)
 
 ---
 
-## Cloudflare Worker Proxy
+## Dashboard Implementation
 
-To access the API from a browser dashboard and add CORS support, deploy a Cloudflare Worker:
+The official Next.js dashboard is available at:
+- **Repository**: https://github.com/bercho001-cpu/trading-bot-dashboard
+- **Live**: https://trading-bot-dashboard-qnxn9eq7y-fersoria001s-projects.vercel.app
 
-### 1. Create a Cloudflare Worker
+It uses the `useStream` hook for real-time SSE updates:
 
-Create a file `cloudflare-worker.js`:
+```typescript
+import { useStream } from '@/hooks/useStream';
 
-```javascript
-export default {
-  async fetch(request) {
-    const url = new URL(request.url);
-    
-    // Proxy /api/* requests to your bot
-    if (url.pathname.startsWith('/api/')) {
-      const botUrl = 'http://YOUR_VM_IP:8080' + url.pathname + url.search;
+export function Dashboard() {
+  const { stats, sessions, trades, connected } = useStream();
+  
+  return (
+    <div>
+      <div>{connected ? '🟢 Live' : '🔴 Offline'}</div>
+      <div>Total Trades: {stats?.total_trades}</div>
+      <div>Win Rate: {stats?.win_rate.toFixed(2)}%</div>
+      <div>PnL: ${stats?.total_pnl.toFixed(2)}</div>
       
-      const response = await fetch(botUrl);
-      const data = await response.text();
-      
-      return new Response(data, {
-        status: response.status,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        }
-      });
-    }
-    
-    return new Response('Not found', { status: 404 });
-  }
+      <SessionsTable data={sessions} />
+      <TradesTable data={trades} />
+    </div>
+  );
 }
 ```
 
-### 2. Deploy to Cloudflare
+### Quick HTML Example (Polling)
 
-```bash
-# Install Wrangler CLI
-npm install -g wrangler
-
-# Login to Cloudflare
-wrangler login
-
-# Create a new worker project
-wrangler init trading-bot-api
-
-# Copy the worker code above into src/index.js
-
-# Deploy
-wrangler deploy
-```
-
-### 3. Use the Cloudflare URL
-
-Once deployed, access the API via:
-```
-https://your-worker.yourname.workers.dev/api/health
-https://your-worker.yourname.workers.dev/api/trades
-https://your-worker.yourname.workers.dev/api/sessions/latest
-```
-
----
-
-## Rate Limiting
-
-The Cloudflare Worker free tier includes **100K requests/day**. Current bot usage:
-- Scraper: ~24 requests/day
-- Paper/Testnet monitoring: ~9,000 requests/day
-- Dashboard polling: Variable (depends on refresh rate)
-
-**Total: ~9,000 req/day** — well under 100K limit.
-
----
-
-## Dashboard Integration Example
-
-Create a simple HTML dashboard:
+For a simple read-only dashboard without SSE:
 
 ```html
 <!DOCTYPE html>
@@ -344,41 +338,27 @@ Create a simple HTML dashboard:
 </head>
 <body>
   <h1>Trading Bot Analytics</h1>
-  
   <div id="stats"></div>
-  <div id="latest"></div>
   
   <script>
-    const API_BASE = 'https://your-worker.yourname.workers.dev';
+    const API_URL = 'http://35.196.16.129:8080';
     
     async function updateDashboard() {
       try {
-        const stats = await fetch(`${API_BASE}/api/stats`).then(r => r.json());
-        const latest = await fetch(`${API_BASE}/api/sessions/latest`).then(r => r.json());
-        
+        const stats = await fetch(`${API_URL}/api/stats`).then(r => r.json());
         document.getElementById('stats').innerHTML = `
           <div class="stat">
-            <b>Total Trades:</b> ${stats.total_trades}
+            <b>Trades:</b> ${stats.total_trades}
           </div>
           <div class="stat">
             <b>Win Rate:</b> <span class=${stats.win_rate > 50 ? 'positive' : 'negative'}>${stats.win_rate.toFixed(2)}%</span>
           </div>
           <div class="stat">
-            <b>Total PnL:</b> <span class=${stats.total_pnl > 0 ? 'positive' : 'negative'}>$${stats.total_pnl.toFixed(2)}</span>
-          </div>
-        `;
-        
-        document.getElementById('latest').innerHTML = `
-          <h2>Latest Sessions</h2>
-          <div class="stat">
-            <b>Paper:</b> ${latest.paper.total_trades} trades, PnL: $${latest.paper.net_pnl.toFixed(2)}
-          </div>
-          <div class="stat">
-            <b>Testnet:</b> ${latest.testnet.total_trades} trades, Balance: $${latest.testnet.final_balance.toFixed(2)}
+            <b>PnL:</b> <span class=${stats.total_pnl > 0 ? 'positive' : 'negative'}>$${stats.total_pnl.toFixed(2)}</span>
           </div>
         `;
       } catch (err) {
-        console.error('Dashboard update failed:', err);
+        console.error('Update failed:', err);
       }
     }
     
@@ -409,9 +389,25 @@ curl http://localhost:8080/api/sessions/latest
 
 Currently there is **no authentication**. If you need to secure the API:
 
-1. Add a token parameter: `GET /api/stats?token=YOUR_SECRET`
-2. Use Cloudflare Workers to check the header: `Authorization: Bearer TOKEN`
-3. Run the API behind a proxy (nginx with basic auth)
+1. **Firewall-based**: Restrict bot API access to known IPs (recommended, already in use)
+   ```bash
+   gcloud compute firewall-rules update allow-dashboard-api \
+     --source-ranges=YOUR_IP/32,VERCEL_IP/32
+   ```
+
+2. **Token-based**: Add API key validation
+   ```http
+   GET /api/stats?key=YOUR_SECRET_KEY
+   ```
+
+3. **Header-based**: Check `Authorization` header
+   ```javascript
+   fetch('http://api.example.com/api/stats', {
+     headers: { 'Authorization': 'Bearer YOUR_TOKEN' }
+   })
+   ```
+
+4. **Proxy**: Run behind nginx/reverse-proxy with authentication
 
 ---
 
