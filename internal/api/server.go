@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"trading-bot/internal/database"
 	tradingv1 "trading-bot/internal/trading/domain"
@@ -26,15 +28,31 @@ func NewServer(repo database.Repository, addr string) *Server {
 	}
 }
 
+func (s *Server) corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/health", s.handleHealth)
-	mux.HandleFunc("/api/stats", s.handleStats)
-	mux.HandleFunc("/api/trades", s.handleTrades)
-	mux.HandleFunc("/api/sessions", s.handleSessions)
-	mux.HandleFunc("/api/sessions/latest", s.handleLatestSession)
-	mux.HandleFunc("/api/performance", s.handlePerformance)
+	mux.HandleFunc("/api/health", s.corsMiddleware(s.handleHealth))
+	mux.HandleFunc("/api/stats", s.corsMiddleware(s.handleStats))
+	mux.HandleFunc("/api/trades", s.corsMiddleware(s.handleTrades))
+	mux.HandleFunc("/api/sessions", s.corsMiddleware(s.handleSessions))
+	mux.HandleFunc("/api/sessions/latest", s.corsMiddleware(s.handleLatestSession))
+	mux.HandleFunc("/api/performance", s.corsMiddleware(s.handlePerformance))
+	mux.HandleFunc("/api/stream", s.corsMiddleware(s.handleStream))
 
 	s.server = &http.Server{
 		Addr:    s.addr,
@@ -388,4 +406,54 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(resp)
+}
+
+type StreamEvent struct {
+	Type      string      `json:"type"`
+	Timestamp string      `json:"timestamp"`
+	Data      interface{} `json:"data"`
+}
+
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	stats, _ := s.repo.GetPerformanceStats()
+	latestSessions, _ := s.repo.GetLastSessions(10)
+	latestTrades, _ := s.repo.GetLastTrades(10)
+
+	events := []StreamEvent{
+		{
+			Type:      "stats",
+			Timestamp: time.Now().Format(time.RFC3339),
+			Data: map[string]interface{}{
+				"total_trades":      stats.TotalTrades,
+				"win_rate":          stats.WinRate,
+				"total_pnl":         stats.TotalPnl,
+			},
+		},
+		{
+			Type:      "sessions",
+			Timestamp: time.Now().Format(time.RFC3339),
+			Data:      latestSessions,
+		},
+		{
+			Type:      "trades",
+			Timestamp: time.Now().Format(time.RFC3339),
+			Data:      latestTrades,
+		},
+	}
+
+	for _, event := range events {
+		data, _ := json.Marshal(event)
+		fmt.Fprintf(w, "data: %s\n\n", string(data))
+		flusher.Flush()
+	}
 }
