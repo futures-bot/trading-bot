@@ -1,14 +1,12 @@
 package config
 
 import (
-	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds the application configuration.
-// It is loaded from a YAML file.
 type Config struct {
 	Symbol               string  `yaml:"symbol"`
 	Leverage             int     `yaml:"leverage"`
@@ -25,13 +23,16 @@ type Config struct {
 	PaperBalance         float64 `yaml:"paper_balance"`
 	LossCooldown         int     `yaml:"loss_cooldown"`
 	WinCooldown          int     `yaml:"win_cooldown"`
-	TelegramBotToken     string
-	TelegramChatID       int64
-	APIKey               string `yaml:"api_key"`
-	HTTPPort             string `yaml:"http_port"`
+	SessionDurationMin   int     `yaml:"session_duration_min"`
+	BacktestFile         string  `yaml:"backtest_file"`
+
+	DatabaseURL      string
+	TelegramBotToken string
+	TelegramChatID   int64
+	BinanceAPIKey    string
+	BinanceSecretKey string
 }
 
-// LoadConfig reads the configuration from the given file path.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -39,20 +40,26 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	err = yaml.Unmarshal(data, &cfg)
-	if err != nil {
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+
+	if cfg.SessionDurationMin == 0 {
+		cfg.SessionDurationMin = 60
+	}
+
+	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
 
 	cfg.TelegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")
 	if chatIDStr != "" {
-		var chatID int64
-		_, err := fmt.Sscan(chatIDStr, &chatID)
+		chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
 		if err == nil {
 			cfg.TelegramChatID = chatID
 		}
 	}
+	cfg.BinanceAPIKey = os.Getenv("BINANCE_API_KEY")
+	cfg.BinanceSecretKey = os.Getenv("BINANCE_SECRET_KEY")
 
 	return &cfg, nil
 }

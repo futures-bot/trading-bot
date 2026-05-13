@@ -2,89 +2,108 @@ package backtest
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+
+	"trading-bot/internal/analytics"
 	"trading-bot/internal/config"
-	"trading-bot/internal/domain"
-	"trading-bot/internal/risk"
-	"trading-bot/internal/strategy"
+	"trading-bot/internal/database"
+	"trading-bot/internal/trading"
+	"trading-bot/internal/trading/domain"
 
 	"github.com/shopspring/decimal"
 )
 
-// Runner executes a backtest from a historical data file.
 type Runner struct {
-	strategy        strategy.Strategy
-	positionManager *risk.PositionManager
+	strategy        trading.Strategy
+	positionManager *trading.PositionManager
 	currentPosition *domain.Position
 	cfg             *config.Config
+	repo            database.Repository
 }
 
-// NewRunner creates a new backtest runner.
-func NewRunner(strategy strategy.Strategy, positionManager *risk.PositionManager, cfg *config.Config) *Runner {
+func NewRunner(strategy trading.Strategy, positionManager *trading.PositionManager, cfg *config.Config, repo database.Repository) *Runner {
 	return &Runner{
 		strategy:        strategy,
 		positionManager: positionManager,
 		cfg:             cfg,
+		repo:            repo,
 	}
 }
 
-// HistoricalData represents a single data point from the historical data file.
 type HistoricalData struct {
 	Time  string          `json:"time"`
 	Price decimal.Decimal `json:"price"`
 }
 
-// Run executes the backtest.
+func (r *Runner) Start(ctx context.Context) {
+	go r.Run(r.cfg.BacktestFile)
+}
+
+func (r *Runner) Stop() {}
+
+func (r *Runner) GetStatus() domain.Status {
+	return domain.Status{}
+}
+
 func (r *Runner) Run(filePath string) error {
-	log.Printf("VERSION 2.0 - BOOTING")
+	log.Printf("Backtest starting: file=%s symbol=%s", filePath, r.cfg.Symbol)
+
 	file, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open backtest file: %w", err)
 	}
 	defer file.Close()
 
 	var candles []domain.Candle
-
 	scanner := bufio.NewScanner(file)
-	var totalTicks, totalTrades, wins, losses, lastTradeTick int
-	var lastPrice decimal.Decimal
 	for scanner.Scan() {
-		totalTicks++
 		var data HistoricalData
 		if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
-			log.Printf("Failed to unmarshal historical data: %v", err)
 			continue
 		}
-		lastPrice = data.Price
+		candles = append(candles, domain.Candle{
+			Open: data.Price, High: data.Price, Low: data.Price, Close: data.Price,
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
 
-		candle := domain.Candle{
-			Open:  data.Price,
-			High:  data.Price,
-			Low:   data.Price,
-			Close: data.Price,
-		}
-		const maxWindow = 200 // More than enough for RSI/EMA stability
-		candles = append(candles, candle)
+	return r.RunFromCandles(candles)
+}
 
-		if len(candles) > maxWindow {
-			// Keep only the most recent 'maxWindow' elements
-			candles = candles[1:]
+func (r *Runner) RunFromCandles(candles []domain.Candle) error {
+	var tradeResults []analytics.TradeResult
+	var window []domain.Candle
+
+	totalTicks := len(candles)
+	var totalTrades, wins, losses, lastTradeTick int
+	var lastPrice decimal.Decimal
+
+	for tick, candle := range candles {
+		lastPrice = candle.Close
+
+		const maxWindow = 200
+		window = append(window, candle)
+		if len(window) > maxWindow {
+			window = window[1:]
 		}
 
 		const warmupPeriod = 20
-		if len(candles) < warmupPeriod {
+		if len(window) < warmupPeriod {
 			continue
 		}
 
-		signal, rsi := r.strategy.Calculate(candles)
+		signal, rsi := r.strategy.Calculate(window)
 
 		if r.currentPosition == nil {
-			if totalTicks > lastTradeTick && (signal == domain.SignalBuy || signal == domain.SignalSell) {
-				qty, err := r.positionManager.CalculatePositionSize(data.Price, r.positionManager.Balance())
+			if tick > lastTradeTick && (signal == domain.SignalBuy || signal == domain.SignalSell) {
+				qty, err := r.positionManager.CalculatePositionSize(candle.Close, r.positionManager.Balance())
 				if err != nil {
-					log.Printf("Failed to calculate position size: %v", err)
 					continue
 				}
 				stopLossPct := r.positionManager.GetStopLossPct()
@@ -92,66 +111,105 @@ func (r *Runner) Run(filePath string) error {
 
 				var stopLossPrice, takeProfitPrice decimal.Decimal
 				if signal == domain.SignalBuy {
-					stopLossPrice = data.Price.Mul(decimal.NewFromFloat(1).Sub(stopLossPct.Div(decimal.NewFromInt(100))))
-					takeProfitPrice = data.Price.Mul(decimal.NewFromFloat(1).Add(takeProfitPct.Div(decimal.NewFromInt(100))))
+					stopLossPrice = candle.Close.Mul(decimal.NewFromFloat(1).Sub(stopLossPct.Div(decimal.NewFromInt(100))))
+					takeProfitPrice = candle.Close.Mul(decimal.NewFromFloat(1).Add(takeProfitPct.Div(decimal.NewFromInt(100))))
 				} else {
-					stopLossPrice = data.Price.Mul(decimal.NewFromFloat(1).Add(stopLossPct.Div(decimal.NewFromInt(100))))
-					takeProfitPrice = data.Price.Mul(decimal.NewFromFloat(1).Sub(takeProfitPct.Div(decimal.NewFromInt(100))))
+					stopLossPrice = candle.Close.Mul(decimal.NewFromFloat(1).Add(stopLossPct.Div(decimal.NewFromInt(100))))
+					takeProfitPrice = candle.Close.Mul(decimal.NewFromFloat(1).Sub(takeProfitPct.Div(decimal.NewFromInt(100))))
 				}
 
 				r.currentPosition = &domain.Position{
 					Symbol:          r.cfg.Symbol,
 					Side:            string(signal),
 					Quantity:        qty,
-					Price:           data.Price,
+					Price:           candle.Close,
 					StopLossPrice:   stopLossPrice,
 					TakeProfitPrice: takeProfitPrice,
 				}
 				r.positionManager.SetCurrentPosition(r.currentPosition)
-				log.Printf("Opened %s position at %s", signal, data.Price)
+				log.Printf("[OPEN] %s @ %s", signal, candle.Close)
 			}
 		} else {
-
-			exit, reason := r.positionManager.Evaluate(data.Price, rsi)
+			exit, reason := r.positionManager.Evaluate(candle.Close, rsi)
 			if exit {
-				profit := data.Price.Sub(r.currentPosition.Price).Mul(r.currentPosition.Quantity)
+				profit := candle.Close.Sub(r.currentPosition.Price).Mul(r.currentPosition.Quantity)
 				if r.currentPosition.Side == string(domain.SignalSell) {
-					profit = r.currentPosition.Price.Sub(data.Price).Mul(r.currentPosition.Quantity)
+					profit = r.currentPosition.Price.Sub(candle.Close).Mul(r.currentPosition.Quantity)
 				}
-				log.Printf("[EXIT] Closed at price %s (Reason: %s)", data.Price, reason)
+				log.Printf("[EXIT] @ %s | PnL: %s | Reason: %s", candle.Close, profit.StringFixed(4), reason)
 				r.positionManager.UpdateBalance(profit)
+
+				dbTrade := &domain.Trade{
+					Symbol:     r.cfg.Symbol,
+					Side:       r.currentPosition.Side,
+					EntryPrice: r.currentPosition.Price,
+					ExitPrice:  candle.Close,
+					Profit:     profit,
+					ExitReason: reason,
+				}
+				r.repo.SaveTrade(dbTrade)
+
+				tradeResults = append(tradeResults, analytics.TradeResult{
+					PnL:  profit,
+					Side: r.currentPosition.Side,
+				})
+
 				r.currentPosition = nil
 				totalTrades++
 				if profit.IsPositive() {
 					wins++
-					lastTradeTick = totalTicks + r.cfg.WinCooldown
+					lastTradeTick = tick + r.cfg.WinCooldown
 				} else if profit.IsNegative() {
 					losses++
-					lastTradeTick = totalTicks + r.cfg.LossCooldown
+					lastTradeTick = tick + r.cfg.LossCooldown
 				} else {
-					lastTradeTick = totalTicks
+					lastTradeTick = tick
 				}
 			}
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return err
-	}
+	report := analytics.Analyze(tradeResults)
 
-	log.Printf("--- Backtest Results ---")
-	log.Printf("Total Ticks Processed: %d", totalTicks)
-	log.Printf("Total Trades Executed: %d", totalTrades)
-	log.Printf("Wins: %d", wins)
-	log.Printf("Losses: %d", losses)
-	log.Printf("Final Balance: %v", r.positionManager.Balance())
-	if losses > 0 {
-		log.Printf("Profit Factor: %.2f", float64(wins)/float64(losses))
-	} else {
-		log.Printf("Profit Factor: N/A (0 Losses)")
+	session := &database.Session{
+		Mode:         "backtest",
+		Symbol:       r.cfg.Symbol,
+		TotalTrades:  report.TotalTrades,
+		Wins:         report.Wins,
+		Losses:       report.Losses,
+		NetPnL:       report.NetPnL,
+		FinalBalance: r.positionManager.Balance().InexactFloat64(),
+		ProfitFactor: report.ProfitFactor,
+		MaxDrawdown:  report.MaxDrawdown,
+		SharpeRatio:  report.SharpeRatio,
+		Expectancy:   report.Expectancy,
+		Status:       "completed",
 	}
+	r.repo.SaveSession(session)
+
+	fmt.Println()
+	fmt.Println("==================== BACKTEST RESULTS ====================")
+	fmt.Printf("  Symbol:          %s\n", r.cfg.Symbol)
+	fmt.Printf("  Ticks Processed: %d\n", totalTicks)
+	fmt.Println("----------------------------------------------------------")
+	fmt.Printf("  Total Trades:    %d\n", report.TotalTrades)
+	fmt.Printf("  Wins:            %d\n", report.Wins)
+	fmt.Printf("  Losses:          %d\n", report.Losses)
+	fmt.Printf("  Win Rate:        %.2f%%\n", report.WinRate)
+	fmt.Println("----------------------------------------------------------")
+	fmt.Printf("  Net PnL:         %.4f USDT\n", report.NetPnL)
+	fmt.Printf("  Gross Profit:    %.4f USDT\n", report.GrossProfit)
+	fmt.Printf("  Gross Loss:      %.4f USDT\n", report.GrossLoss)
+	fmt.Printf("  Final Balance:   %s USDT\n", r.positionManager.Balance().StringFixed(4))
+	fmt.Println("----------------------------------------------------------")
+	fmt.Printf("  Profit Factor:   %.2f\n", report.ProfitFactor)
+	fmt.Printf("  Expectancy:      %.4f USDT/trade\n", report.Expectancy)
+	fmt.Printf("  Max Drawdown:    %.4f USDT\n", report.MaxDrawdown)
+	fmt.Printf("  Sharpe Ratio:    %.4f\n", report.SharpeRatio)
+	fmt.Println("==========================================================")
+
 	if r.currentPosition != nil {
-		log.Printf("Position still OPEN: %s at %v (Current Price: %v)",
+		fmt.Printf("\n  [WARN] Position still OPEN: %s @ %s (Last Price: %s)\n",
 			r.currentPosition.Side, r.currentPosition.Price, lastPrice)
 	}
 

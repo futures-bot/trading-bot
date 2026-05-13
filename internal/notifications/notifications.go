@@ -1,4 +1,4 @@
-package notifier
+package notifications
 
 import (
 	"log"
@@ -6,6 +6,24 @@ import (
 
 	"gopkg.in/telebot.v3"
 )
+
+// Notifier is an interface for sending notifications.
+type Notifier interface {
+	Notify(message string)
+}
+
+// NullNotifier is a notifier that does nothing.
+type NullNotifier struct{}
+
+// NewNullNotifier creates a new NullNotifier.
+func NewNullNotifier() *NullNotifier {
+	return &NullNotifier{}
+}
+
+// Notify does nothing.
+func (n *NullNotifier) Notify(message string) {
+	// Do nothing
+}
 
 // TelegramNotifier is a Notifier that sends messages to a Telegram chat.
 type TelegramNotifier struct {

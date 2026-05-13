@@ -1,0 +1,17 @@
+symbol: SOLUSDT
+leverage: 10
+session_budget: 50.0
+ema_fast: 9
+ema_slow: 21
+min_ema_gap: 0.001
+take_profit_pct: 0.5
+stop_loss_pct: 0.2
+break_even_trigger_pct: 0.1
+trail_distance_pct: 0.1
+confirmation_count: 3
+min_profit_for_flip_exit: 0.1
+paper_balance: 1000.0
+loss_cooldown: 60
+win_cooldown: 60
+session_duration_min: 60
+backtest_file: data/trades.jsonl

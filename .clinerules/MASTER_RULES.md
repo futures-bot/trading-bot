@@ -86,4 +86,3 @@
 -   **Session Summary:** At the end of a session, create a `summary_N.txt` that counts:
     -   Total Longs vs Total Shorts.
     -   Average hold time per trade.
-
