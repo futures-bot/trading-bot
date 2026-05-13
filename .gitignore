@@ -1,2 +1,8 @@
-.env
-*.db
+config.yaml
+*.tar.gz
+trading-bot
+paper.jsonl
+
+# Sensitive files
+CLOUDFLARE_SETUP.md
+DEPLOYMENT.md
