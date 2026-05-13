@@ -26,7 +26,8 @@ type Config struct {
 	SessionDurationMin   int     `yaml:"session_duration_min"`
 	BacktestFile         string  `yaml:"backtest_file"`
 
-	DatabaseURL      string
+	NatsURL          string
+	NatsCredsFile    string
 	TelegramBotToken string
 	TelegramChatID   int64
 	BinanceAPIKey    string
@@ -48,7 +49,8 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.SessionDurationMin = 60
 	}
 
-	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
+	cfg.NatsURL = os.Getenv("NATS_URL")
+	cfg.NatsCredsFile = os.Getenv("NATS_CREDS_FILE")
 
 	cfg.TelegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")

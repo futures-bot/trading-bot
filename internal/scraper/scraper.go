@@ -11,20 +11,20 @@ import (
 	"sync"
 	"time"
 
-	"trading-bot/internal/database"
+	"trading-bot/internal/events"
 )
 
 const binanceFuturesKlineURL = "https://testnet.binancefuture.com/fapi/v1/klines"
 
 type Scraper struct {
-	repo   database.Repository
-	client *http.Client
+	publisher *events.Publisher
+	client    *http.Client
 }
 
-func New(repo database.Repository) *Scraper {
+func New(publisher *events.Publisher) *Scraper {
 	return &Scraper{
-		repo:   repo,
-		client: &http.Client{Timeout: 30 * time.Second},
+		publisher: publisher,
+		client:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -62,11 +62,6 @@ func (s *Scraper) ScrapeSymbols(ctx context.Context, symbols []string, interval 
 func (s *Scraper) scrapeSymbol(ctx context.Context, symbol, interval string, hours int) (int, error) {
 	endMs := time.Now().UnixMilli()
 	startMs := endMs - int64(hours)*60*60*1000
-
-	latestTime, err := s.repo.GetLatestKlineTime(symbol, interval)
-	if err == nil && latestTime > startMs {
-		startMs = latestTime + 60000 // next minute after last known
-	}
 
 	if startMs >= endMs {
 		log.Printf("[%s] Already up to date", symbol)
@@ -110,14 +105,13 @@ func (s *Scraper) scrapeSymbol(ctx context.Context, symbol, interval string, hou
 			}
 
 			if len(klines) > 0 {
-				if err := s.repo.SaveKlines(klines); err != nil {
-					log.Printf("[%s] chunk %d/%d save failed: %v", c.Symbol, idx+1, len(chunks), err)
-					return
+				for _, kline := range klines {
+					s.publisher.Publish(context.Background(), "klines."+c.Symbol, kline)
 				}
 				mu.Lock()
 				totalSaved += len(klines)
 				mu.Unlock()
-				log.Printf("[%s] chunk %d/%d: saved %d klines", c.Symbol, idx+1, len(chunks), len(klines))
+				log.Printf("[%s] chunk %d/%d: published %d klines", c.Symbol, idx+1, len(chunks), len(klines))
 			}
 		}(i, chunk)
 	}
@@ -126,7 +120,19 @@ func (s *Scraper) scrapeSymbol(ctx context.Context, symbol, interval string, hou
 	return totalSaved, nil
 }
 
-func (s *Scraper) fetchKlines(ctx context.Context, chunk klineChunk) ([]database.Kline, error) {
+type Kline struct {
+	Symbol    string  `json:"symbol"`
+	Interval  string  `json:"interval"`
+	OpenTime  int64   `json:"open_time"`
+	CloseTime int64   `json:"close_time"`
+	Open      float64 `json:"open"`
+	High      float64 `json:"high"`
+	Low       float64 `json:"low"`
+	Close     float64 `json:"close"`
+	Volume    float64 `json:"volume"`
+}
+
+func (s *Scraper) fetchKlines(ctx context.Context, chunk klineChunk) ([]Kline, error) {
 	url := fmt.Sprintf("%s?symbol=%s&interval=%s&startTime=%d&endTime=%d&limit=1500",
 		binanceFuturesKlineURL, chunk.Symbol, chunk.Interval, chunk.StartMs, chunk.EndMs)
 
@@ -151,7 +157,7 @@ func (s *Scraper) fetchKlines(ctx context.Context, chunk klineChunk) ([]database
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	var klines []database.Kline
+	var klines []Kline
 	for _, r := range raw {
 		if len(r) < 11 {
 			continue
@@ -165,7 +171,7 @@ func (s *Scraper) fetchKlines(ctx context.Context, chunk klineChunk) ([]database
 		close_, _ := strconv.ParseFloat(unquote(r[4]), 64)
 		volume, _ := strconv.ParseFloat(unquote(r[5]), 64)
 
-		klines = append(klines, database.Kline{
+		klines = append(klines, Kline{
 			Symbol:    chunk.Symbol,
 			Interval:  chunk.Interval,
 			OpenTime:  openTime,

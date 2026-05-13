@@ -6,3 +6,4 @@ paper.jsonl
 # Sensitive files
 CLOUDFLARE_SETUP.md
 DEPLOYMENT.md
+*.creds

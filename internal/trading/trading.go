@@ -8,10 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"trading-bot/internal/analytics"
 	"trading-bot/internal/config"
-	"trading-bot/internal/database"
-	"trading-bot/internal/logging"
+	"trading-bot/internal/events"
 	"trading-bot/internal/marketdata"
 	"trading-bot/internal/notifications"
 	"trading-bot/internal/trading/domain"
@@ -24,6 +22,13 @@ import (
 var ErrBudgetExhausted = errors.New("budget exhausted")
 
 var ErrInsufficientFunds = errors.New("insufficient funds")
+
+type Trader interface {
+	Start(ctx context.Context)
+	Stop()
+	GetStatus() domain.Status
+	GetTradeLogs() []*domain.TradeLog
+}
 
 type PositionManager struct {
 	mutex               sync.RWMutex
@@ -218,7 +223,7 @@ func NewEMACrossover(fastPeriod, slowPeriod int, cooldown time.Duration, tradeTr
 
 func (s *EMACrossover) UpdateLastTradeTime() {}
 
-func (s *EMACrossover) GetRSI() decimal.Decimal       { return s.rsi }
+func (s *EMACrossover) GetRSI() decimal.Decimal        { return s.rsi }
 func (s *EMACrossover) GetEMAGap() decimal.Decimal     { return s.emadiff }
 func (s *EMACrossover) GetVolatility() decimal.Decimal { return s.volatility }
 func (s *EMACrossover) GetSignal() domain.Signal       { return s.lastSignal }
@@ -475,21 +480,25 @@ type BinanceTrader struct {
 	pm               *PositionManager
 	emaStrategy      Strategy
 	client           *marketdata.Client
-	counter          *logging.TradeCounter
 	notifier         notifications.Notifier
-	repo             database.Repository
+	publisher        *events.Publisher
 	startTime        time.Time
 	sessionNumber    int
 	lastPrice        decimal.Decimal
 	availableBalance decimal.Decimal
-	currentTrade     *logging.TradeLog
 	candles          []domain.Candle
-	tradeResults     []analytics.TradeResult
 	shutdownStatus   string
+	tradeLogs        []*domain.TradeLog
 
 	mutex   sync.RWMutex
 	Running bool
 	cancel  context.CancelFunc
+}
+
+func (e *BinanceTrader) GetTradeLogs() []*domain.TradeLog {
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
+	return e.tradeLogs
 }
 
 func (e *BinanceTrader) GetStatus() domain.Status {
@@ -498,14 +507,6 @@ func (e *BinanceTrader) GetStatus() domain.Status {
 		Uptime:    time.Since(e.startTime).String(),
 		Balance:   e.availableBalance.InexactFloat64(),
 	}
-}
-
-func (e *BinanceTrader) GetTradeResults() []analytics.TradeResult {
-	e.mutex.RLock()
-	defer e.mutex.RUnlock()
-	result := make([]analytics.TradeResult, len(e.tradeResults))
-	copy(result, e.tradeResults)
-	return result
 }
 
 func (e *BinanceTrader) GetShutdownStatus() string {
@@ -682,10 +683,6 @@ func (e *BinanceTrader) openPosition(ctx context.Context, side futures.SideType,
 	}
 
 	e.tracker.StartTrade(entryPrice, signalSide)
-	e.currentTrade = &logging.TradeLog{
-		Entry: entryPrice,
-		Side:  string(signalSide),
-	}
 }
 
 func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType, quantity decimal.Decimal, exitReason string) {
@@ -720,10 +717,10 @@ func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType
 
 	quantity, _ = decimal.NewFromString(order.OrigQuantity)
 	var pnl decimal.Decimal
-	if e.currentTrade.Side == "Buy" || e.currentTrade.Side == "BUY" {
-		pnl = exitPrice.Sub(e.currentTrade.Entry).Mul(quantity)
+	if e.tracker.GetSide() == domain.SignalBuy {
+		pnl = exitPrice.Sub(e.tracker.GetEntryPrice()).Mul(quantity)
 	} else {
-		pnl = e.currentTrade.Entry.Sub(exitPrice).Mul(quantity)
+		pnl = e.tracker.GetEntryPrice().Sub(exitPrice).Mul(quantity)
 	}
 
 	if pnl.Abs().GreaterThan(decimal.NewFromFloat(e.config.SessionBudget)) {
@@ -733,40 +730,29 @@ func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType
 		e.hardShutdown("PANIC")
 	}
 
-	e.currentTrade.Exit = exitPrice
-	e.currentTrade.PnlUSDT = pnl
-	e.currentTrade.ExitReason = exitReason
-	e.counter.Record(*e.currentTrade)
-
-	dbTrade := &domain.Trade{
-		Symbol:     e.config.Symbol,
-		Side:       e.currentTrade.Side,
-		EntryPrice: e.currentTrade.Entry,
-		ExitPrice:  e.currentTrade.Exit,
-		Profit:     e.currentTrade.PnlUSDT,
-		ExitReason: e.currentTrade.ExitReason,
+	dbTrade := map[string]interface{}{
+		"symbol":      e.config.Symbol,
+		"side":        string(e.tracker.Side),
+		"entry_price": e.tracker.GetEntryPrice(),
+		"exit_price":  exitPrice,
+		"profit":      pnl,
+		"exit_reason": exitReason,
 	}
-	e.repo.SaveTrade(dbTrade)
-
-	e.repo.SaveTradeLog(&database.TradeLog{
-		Mode:       "testnet",
-		Symbol:     e.config.Symbol,
-		Side:       e.currentTrade.Side,
-		Entry:      e.currentTrade.Entry.InexactFloat64(),
-		Exit:       exitPrice.InexactFloat64(),
-		PnlUSDT:   pnl.InexactFloat64(),
-		ExitReason: exitReason,
-	})
+	e.publisher.Publish(context.Background(), "trades", dbTrade)
 
 	e.mutex.Lock()
-	e.tradeResults = append(e.tradeResults, analytics.TradeResult{
-		PnL:  pnl,
-		Side: e.currentTrade.Side,
+	e.tradeLogs = append(e.tradeLogs, &domain.TradeLog{
+		Mode:       "testnet",
+		Symbol:     e.config.Symbol,
+		Side:       string(e.tracker.Side),
+		Entry:      e.tracker.GetEntryPrice().InexactFloat64(),
+		Exit:       exitPrice.InexactFloat64(),
+		PnlUSDT:    pnl.InexactFloat64(),
+		ExitReason: exitReason,
 	})
 	e.mutex.Unlock()
 
 	e.tracker.EndTrade()
-	e.currentTrade = nil
 }
 
 func (e *BinanceTrader) updateDashboard(ctx context.Context) {
@@ -816,17 +802,11 @@ func (e *BinanceTrader) printDashboard() {
 	} else {
 		log.Println("[ACTIVE TRADE] No active trade")
 	}
-	log.Printf("[SESSION] Trades: %d | Wins: %d | Losses: %d | Win Rate: %.2f%% | PnL: %s USDT",
-		e.counter.GetTotalTrades(),
-		e.counter.GetWins(),
-		e.counter.GetLosses(),
-		e.counter.GetWinRate(),
-		e.counter.GetTotalProfit().StringFixed(2),
-	)
+
 	log.Println("--------------------------------------------------")
 }
 
-func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, repo database.Repository, startTime time.Time, sessionNumber int, availableBalance decimal.Decimal, apiKey, apiSecret string) (*BinanceTrader, error) {
+func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, publisher *events.Publisher, startTime time.Time, sessionNumber int, availableBalance decimal.Decimal, apiKey, apiSecret string) (*BinanceTrader, error) {
 	client, err := marketdata.New(cfg, apiKey, apiSecret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create exchange client: %w", err)
@@ -848,14 +828,14 @@ func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, repo 
 	emaStrategy := NewEMACrossover(cfg.EMAFast, cfg.EMASlow, 5*time.Minute, tracker)
 
 	return &BinanceTrader{
-		config:           cfg,
-		tracker:          tracker,
-		pm:               pm,
-		emaStrategy:      emaStrategy,
-		client:           client,
-		counter:          logging.NewTradeCounter(),
+		config:      cfg,
+		tracker:     tracker,
+		pm:          pm,
+		emaStrategy: emaStrategy,
+		client:      client,
+
 		notifier:         notifier,
-		repo:             repo,
+		publisher:        publisher,
 		startTime:        startTime,
 		sessionNumber:    sessionNumber,
 		availableBalance: availableBalance,
@@ -864,25 +844,22 @@ func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, repo 
 
 type PaperTrader struct {
 	cfg             *config.Config
-	counter         *logging.TradeCounter
 	positionManager *PositionManager
 	strategy        Strategy
 	balance         decimal.Decimal
 	currentPosition *domain.Position
 	candles         []domain.Candle
-	repo            database.Repository
+	publisher       *events.Publisher
 	startTime       time.Time
 	cancel          context.CancelFunc
-	tradeResults    []analytics.TradeResult
+	tradeLogs       []*domain.TradeLog
 	mu              sync.RWMutex
 }
 
-func (pt *PaperTrader) GetTradeResults() []analytics.TradeResult {
+func (pt *PaperTrader) GetTradeLogs() []*domain.TradeLog {
 	pt.mu.RLock()
 	defer pt.mu.RUnlock()
-	result := make([]analytics.TradeResult, len(pt.tradeResults))
-	copy(result, pt.tradeResults)
-	return result
+	return pt.tradeLogs
 }
 
 func (pt *PaperTrader) GetStatus() domain.Status {
@@ -972,39 +949,25 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 					}
 					pt.balance = pt.balance.Add(profit)
 
-					pt.counter.Record(logging.TradeLog{
-						Entry:      pt.currentPosition.Price,
-						Exit:       price,
-						Side:       pt.currentPosition.Side,
-						PnlUSDT:    profit,
-						ExitReason: reason,
-					})
+					dbTrade := map[string]interface{}{
+						"symbol":      pt.cfg.Symbol,
+						"side":        pt.currentPosition.Side,
+						"entry_price": pt.currentPosition.Price,
+						"exit_price":  price,
+						"profit":      profit,
+						"exit_reason": reason,
+					}
+					pt.publisher.Publish(context.Background(), "trades", dbTrade)
 
-					pt.repo.SaveTradeLog(&database.TradeLog{
+					pt.mu.Lock()
+					pt.tradeLogs = append(pt.tradeLogs, &domain.TradeLog{
 						Mode:       "paper",
 						Symbol:     pt.cfg.Symbol,
 						Side:       pt.currentPosition.Side,
 						Entry:      pt.currentPosition.Price.InexactFloat64(),
 						Exit:       price.InexactFloat64(),
-						PnlUSDT:   profit.InexactFloat64(),
+						PnlUSDT:    profit.InexactFloat64(),
 						ExitReason: reason,
-					})
-
-					dbTrade := &domain.Trade{
-						Symbol:     pt.cfg.Symbol,
-						Side:       pt.currentPosition.Side,
-						EntryPrice: pt.currentPosition.Price,
-						ExitPrice:  price,
-						Profit:     profit,
-						ExitReason: reason,
-					}
-					pt.repo.SaveTrade(dbTrade)
-					pt.repo.SavePaperBalance(pt.balance)
-
-					pt.mu.Lock()
-					pt.tradeResults = append(pt.tradeResults, analytics.TradeResult{
-						PnL:  profit,
-						Side: pt.currentPosition.Side,
 					})
 					pt.mu.Unlock()
 
@@ -1023,22 +986,16 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 	}
 }
 
-func NewPaperTrader(cfg *config.Config, repo database.Repository) (*PaperTrader, error) {
+func NewPaperTrader(cfg *config.Config, publisher *events.Publisher) (*PaperTrader, error) {
 	pm := NewBacktestPositionManager(cfg)
 	tradeTracker := NewTradeTracker(cfg.TakeProfitPct, cfg.StopLossPct, cfg.ConfirmationCount, cfg.MinProfitForFlipExit)
 	strategy := NewEMACrossover(cfg.EMAFast, cfg.EMASlow, 0, tradeTracker)
 
-	balance, err := repo.GetPaperBalance()
-	if err != nil {
-		balance = decimal.NewFromFloat(1000.0)
-	}
-
 	return &PaperTrader{
 		cfg:             cfg,
-		counter:         logging.NewTradeCounter(),
 		positionManager: pm,
 		strategy:        strategy,
-		balance:         balance,
-		repo:            repo,
+		balance:         decimal.NewFromFloat(1000.0),
+		publisher:       publisher,
 	}, nil
 }

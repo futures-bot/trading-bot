@@ -10,7 +10,7 @@ import (
 
 	"trading-bot/internal/analytics"
 	"trading-bot/internal/config"
-	"trading-bot/internal/database"
+	"trading-bot/internal/events"
 	"trading-bot/internal/trading"
 	"trading-bot/internal/trading/domain"
 
@@ -22,15 +22,15 @@ type Runner struct {
 	positionManager *trading.PositionManager
 	currentPosition *domain.Position
 	cfg             *config.Config
-	repo            database.Repository
+	publisher       *events.Publisher
 }
 
-func NewRunner(strategy trading.Strategy, positionManager *trading.PositionManager, cfg *config.Config, repo database.Repository) *Runner {
+func NewRunner(strategy trading.Strategy, positionManager *trading.PositionManager, cfg *config.Config, publisher *events.Publisher) *Runner {
 	return &Runner{
 		strategy:        strategy,
 		positionManager: positionManager,
 		cfg:             cfg,
-		repo:            repo,
+		publisher:       publisher,
 	}
 }
 
@@ -147,7 +147,8 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 					Profit:     profit,
 					ExitReason: reason,
 				}
-				r.repo.SaveTrade(dbTrade)
+
+				r.publisher.Publish(context.Background(), "trades", dbTrade)
 
 				tradeResults = append(tradeResults, analytics.TradeResult{
 					PnL:  profit,
@@ -171,21 +172,21 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 
 	report := analytics.Analyze(tradeResults)
 
-	session := &database.Session{
-		Mode:         "backtest",
-		Symbol:       r.cfg.Symbol,
-		TotalTrades:  report.TotalTrades,
-		Wins:         report.Wins,
-		Losses:       report.Losses,
-		NetPnL:       report.NetPnL,
-		FinalBalance: r.positionManager.Balance().InexactFloat64(),
-		ProfitFactor: report.ProfitFactor,
-		MaxDrawdown:  report.MaxDrawdown,
-		SharpeRatio:  report.SharpeRatio,
-		Expectancy:   report.Expectancy,
-		Status:       "completed",
+	session := map[string]interface{}{
+		"mode":          "backtest",
+		"symbol":        r.cfg.Symbol,
+		"total_trades":  report.TotalTrades,
+		"wins":          report.Wins,
+		"losses":        report.Losses,
+		"net_pnl":       report.NetPnL,
+		"final_balance": r.positionManager.Balance().InexactFloat64(),
+		"profit_factor": report.ProfitFactor,
+		"max_drawdown":  report.MaxDrawdown,
+		"sharpe_ratio":  report.SharpeRatio,
+		"expectancy":    report.Expectancy,
+		"status":        "completed",
 	}
-	r.repo.SaveSession(session)
+	r.publisher.Publish(context.Background(), "sessions", session)
 
 	fmt.Println()
 	fmt.Println("==================== BACKTEST RESULTS ====================")
