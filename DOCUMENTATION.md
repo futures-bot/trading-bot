@@ -1,35 +1,51 @@
-# Futures Bot
+# Documentation
 
-## Main Characteristics
+## Overview
 
-The futures bot is a trading bot designed to trade cryptocurrency futures on Binance. It uses a strategy based on EMA crossovers to generate trading signals.
+This is a Binance Futures trading bot written in Go. It provides a framework for developing and backtesting trading strategies. The bot is designed to be event-driven and modular, allowing for easy extension and customization.
 
-- **Strategy-driven:** The bot uses a predefined trading strategy to make decisions. The core strategy is based on the crossover of two Exponential Moving Averages (EMAs).
-- **Configuration:** The bot is configured through a `.env` file, where parameters like API keys, trading pair, and strategy settings can be defined.
-- **Market Data:** It connects to the Binance API to get real-time market data (klines/candlesticks).
-- **Trading:** It can execute trades (buy/sell) on the Binance futures market.
-- **Backtesting:** The bot includes a backtesting module to test the trading strategy on historical data.
-- **Data Logging:** The bot logs trades and other data to JSON files for analysis.
+## Project Structure
+
+The project is organized into the following directories:
+
+- `cmd/`: Contains the main application entrypoint.
+- `data/`: Contains historical market data and trade logs.
+- `docs/`: Contains architecture and coding standards documentation.
+- `internal/`: Contains the core application logic.
+  - `backtest/`: The backtesting engine.
+  - `config/`: Application configuration.
+  - `database/`: Database repository and models.
+  - `events/`: NATS event publisher.
+  - `marketdata/`: Binance market data client.
+  - `notifications/`: Telegram notifications.
+  - `scraper/`: Historical data scraper.
+  - `strategy/`: Trading strategies.
+  - `trading/`: Core trading logic.
+- `shared/`: Shared code between services.
+  - `eventdef/`: Standardized event definitions.
+- `workflows/`: Task-oriented workflows for common development tasks.
+
+## Workflows
+
+The `workflows` directory contains a set of predefined workflows for common development tasks. These workflows are designed to be executed by an AI assistant like Cline to ensure consistency and adherence to the project architecture.
+
+- `add_metric.md`: A workflow for adding a new analytics metric to the `bot-analytics` service.
+- `event_schema_workflow.md`: A workflow for standardizing NATS events.
+- `persistence_workflow.md`: A workflow for implementing the persistence layer.
+
+## Configuration
+
+The bot is configured through a `config.yaml` file and a `.env` file.
+
+- `config.yaml`: Contains trading parameters such as the symbol to trade, leverage, and strategy parameters.
+- `.env`: Contains environment variables such as API keys, NATS URL, and Telegram bot token.
 
 ## Usage
 
-1. **Configuration:** Create a `.env` file with the necessary API keys and configuration parameters.
-2. **Run the bot:** `go run main.go`
-3. **Backtesting:** `go run internal/backtest/runner.go` (This is a guess based on the file name and may not be accurate)
+The bot can be run in several modes:
 
-# Bot Analytics
-
-## Main Characteristics
-
-The bot analytics project seems to be a service that collects and analyzes data from the futures bot.
-
-- **API:** It exposes an API to provide access to the analytics data.
-- **Database:** It uses a database to store the data.
-- **Event-driven:** It subscribes to events, likely from the futures bot, to update its data.
-- **Metrics:** It collects and exposes metrics about the trading activity.
-- **Analytics:** It provides analytics on the trading data, such as PnL, win rate, etc.
-
-## Usage
-
-1. **Run the service:** `go run main.go`
-2. **Access the API:** The API can be accessed at `http://localhost:<port>` (the port needs to be configured).
+- `run`: Runs the scraper, paper trader, testnet trader, and backtester concurrently.
+- `backtest`: Runs a backtest on historical data.
+- `paper`: Starts paper trading.
+- `testnet`: Starts testnet trading.
+- `scrape`: Scrapes historical kline data from Binance.
