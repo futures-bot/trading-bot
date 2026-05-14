@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"trading-bot/shared/eventdef"
+
 	"github.com/nats-io/nats.go"
 )
 
@@ -23,7 +25,7 @@ const (
 )
 
 type Publisher interface {
-	Publish(ctx context.Context, subject string, data interface{}) error
+	Publish(ctx context.Context, subject string, event eventdef.Event) error
 	Close()
 }
 
@@ -44,8 +46,8 @@ func NewPublisher(natsURL string, opts ...nats.Option) (Publisher, error) {
 	return &natsPublisher{nc: nc}, nil
 }
 
-func (p *natsPublisher) Publish(ctx context.Context, subject string, data interface{}) error {
-	bytes, err := json.Marshal(data)
+func (p *natsPublisher) Publish(ctx context.Context, subject string, event eventdef.Event) error {
+	bytes, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}

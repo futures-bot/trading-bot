@@ -13,6 +13,7 @@ import (
 	"trading-bot/internal/marketdata"
 	"trading-bot/internal/notifications"
 	"trading-bot/internal/trading/domain"
+	"trading-bot/shared/eventdef"
 
 	"github.com/adshao/go-binance/v2/common"
 	"github.com/adshao/go-binance/v2/futures"
@@ -721,7 +722,7 @@ func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType
 		"profit":      pnl,
 		"exit_reason": exitReason,
 	}
-	e.publisher.Publish(context.Background(), "trades", dbTrade)
+	e.publisher.Publish(context.Background(), "trades", eventdef.NewEvent("trade.closed", "binance-trader", 1, dbTrade))
 
 	e.mutex.Lock()
 	e.tradeLogs = append(e.tradeLogs, &domain.TradeLog{
@@ -941,7 +942,7 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 						"profit":      profit,
 						"exit_reason": reason,
 					}
-					pt.publisher.Publish(context.Background(), "trades", dbTrade)
+					pt.publisher.Publish(context.Background(), "trades", eventdef.NewEvent("trade.closed", "paper-trader", 1, dbTrade))
 
 					pt.mu.Lock()
 					pt.tradeLogs = append(pt.tradeLogs, &domain.TradeLog{

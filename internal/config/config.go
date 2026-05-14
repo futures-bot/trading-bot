@@ -32,6 +32,7 @@ type Config struct {
 	TelegramChatID   int64
 	BinanceAPIKey    string
 	BinanceSecretKey string
+	DB_DSN           string
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -62,6 +63,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	cfg.BinanceAPIKey = os.Getenv("BINANCE_API_KEY")
 	cfg.BinanceSecretKey = os.Getenv("BINANCE_SECRET_KEY")
+	cfg.DB_DSN = os.Getenv("DB_DSN")
 
 	return &cfg, nil
 }

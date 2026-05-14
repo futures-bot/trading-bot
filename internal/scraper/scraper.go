@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"trading-bot/internal/events"
+	"trading-bot/shared/eventdef"
 )
 
 const binanceFuturesKlineURL = "https://testnet.binancefuture.com/fapi/v1/klines"
@@ -123,7 +124,7 @@ func (s *Scraper) scrapeSymbol(ctx context.Context, symbol, interval string, hou
 
 			if len(klines) > 0 {
 				for _, kline := range klines {
-					s.publisher.Publish(context.Background(), "klines."+c.Symbol, kline)
+					s.publisher.Publish(context.Background(), "klines."+c.Symbol, eventdef.NewEvent("kline.new", "scraper", 1, kline))
 				}
 				mu.Lock()
 				totalSaved += len(klines)

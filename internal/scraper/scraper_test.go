@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"trading-bot/shared/eventdef"
 )
 
 // Mock successful server response
@@ -21,15 +22,15 @@ func mockServerError(w http.ResponseWriter, r *http.Request) {
 
 // Mock implementation of the events.Publisher interface.
 type MockPublisher struct {
-	PublishedEvents map[string]interface{}
+	PublishedEvents map[string]eventdef.Event
 }
 
 // Publish records the event in the PublishedEvents map.
-func (p *MockPublisher) Publish(ctx context.Context, topic string, data interface{}) error {
+func (p *MockPublisher) Publish(ctx context.Context, topic string, event eventdef.Event) error {
 	if p.PublishedEvents == nil {
-		p.PublishedEvents = make(map[string]interface{})
+		p.PublishedEvents = make(map[string]eventdef.Event)
 	}
-	p.PublishedEvents[topic] = data
+	p.PublishedEvents[topic] = event
 	return nil
 }
 

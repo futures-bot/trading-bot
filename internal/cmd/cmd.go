@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"trading-bot/internal/config"
+	"trading-bot/internal/database"
 	"trading-bot/internal/events"
 	"trading-bot/internal/notifications"
 	"trading-bot/internal/scraper"
 	"trading-bot/internal/trading"
 	"trading-bot/internal/trading/domain"
+	"trading-bot/shared/eventdef"
 
 	"github.com/joho/godotenv"
 	"github.com/nats-io/nats.go"
@@ -74,12 +76,17 @@ CONFIGURATION:
 `, version)
 }
 
-func loadAll() (*config.Config, events.Publisher) {
+func loadAll() (*config.Config, events.Publisher, database.Repository) {
 	_ = godotenv.Load()
 
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	repo, err := database.NewGormRepository(cfg)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
 	if cfg.NatsURL == "" {
@@ -96,7 +103,7 @@ func loadAll() (*config.Config, events.Publisher) {
 		log.Fatalf("Failed to connect to nats: %v", err)
 	}
 
-	return cfg, publisher
+	return cfg, publisher, repo
 }
 
 func makeNotifier(cfg *config.Config) notifications.Notifier {
@@ -112,7 +119,7 @@ func makeNotifier(cfg *config.Config) notifications.Notifier {
 }
 
 func run() {
-	cfg, publisher := loadAll()
+	cfg, publisher, _ := loadAll()
 	defer publisher.Close()
 
 	if cfg.BinanceAPIKey == "" || cfg.BinanceSecretKey == "" {
@@ -258,7 +265,7 @@ func runPaperLoop(ctx context.Context, cfg *config.Config, publisher events.Publ
 			Expectancy:   expectancy,
 			Status:       "completed",
 		}
-		publisher.Publish(context.Background(), "sessions", session)
+		publisher.Publish(context.Background(), "sessions", eventdef.NewEvent("session.completed", "paper-trader", 1, session))
 
 		sessionNum++
 
@@ -320,7 +327,7 @@ func runTestnetLoop(ctx context.Context, cfg *config.Config, publisher events.Pu
 			Expectancy:   expectancy,
 			Status:       shutdownStatus,
 		}
-		publisher.Publish(context.Background(), "sessions", session)
+		publisher.Publish(context.Background(), "sessions", eventdef.NewEvent("session.completed", "testnet-trader", 1, session))
 
 		if shutdownStatus == "LIQUIDATED_OR_EMPTY" || shutdownStatus == "MARGIN_CALL" {
 			msg := fmt.Sprintf("TESTNET STOPPED: Budget exhausted (%s). Session #%d",
@@ -341,7 +348,7 @@ func runTestnetLoop(ctx context.Context, cfg *config.Config, publisher events.Pu
 }
 
 func runScrape() {
-	cfg, publisher := loadAll()
+	cfg, publisher, _ := loadAll()
 	defer publisher.Close()
 
 	symbols := []string{cfg.Symbol}
@@ -422,7 +429,7 @@ func runBacktestFromDB(cfg *config.Config, publisher events.Publisher, symbol, i
 }
 
 func runPaper() {
-	cfg, publisher := loadAll()
+	cfg, publisher, _ := loadAll()
 	defer publisher.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -440,7 +447,7 @@ func runPaper() {
 }
 
 func runTestnet() {
-	cfg, publisher := loadAll()
+	cfg, publisher, _ := loadAll()
 	defer publisher.Close()
 
 	if cfg.BinanceAPIKey == "" || cfg.BinanceSecretKey == "" {

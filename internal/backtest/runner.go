@@ -12,6 +12,7 @@ import (
 	"trading-bot/internal/events"
 	"trading-bot/internal/trading"
 	"trading-bot/internal/trading/domain"
+	"trading-bot/shared/eventdef"
 
 	"github.com/shopspring/decimal"
 )
@@ -147,7 +148,7 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 					ExitReason: reason,
 				}
 
-				r.publisher.Publish(context.Background(), "trades", dbTrade)
+				r.publisher.Publish(context.Background(), "trades", eventdef.NewEvent("trade.closed", "backtest", 1, dbTrade))
 
 				r.currentPosition = nil
 				totalTrades++
@@ -178,7 +179,7 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 		"expectancy":    0.0,
 		"status":        "completed",
 	}
-	r.publisher.Publish(context.Background(), "sessions", session)
+	r.publisher.Publish(context.Background(), "sessions", eventdef.NewEvent("session.completed", "backtest", 1, session))
 
 	fmt.Println()
 	fmt.Println("==================== BACKTEST RESULTS ====================")
