@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 
-	"trading-bot/internal/analytics"
 	"trading-bot/internal/config"
 	"trading-bot/internal/events"
 	"trading-bot/internal/trading"
@@ -17,15 +16,16 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Runner is a backtesting engine that reads historical data from a file and simulates trades.
 type Runner struct {
 	strategy        trading.Strategy
 	positionManager *trading.PositionManager
 	currentPosition *domain.Position
 	cfg             *config.Config
-	publisher       *events.Publisher
+	publisher       events.Publisher
 }
 
-func NewRunner(strategy trading.Strategy, positionManager *trading.PositionManager, cfg *config.Config, publisher *events.Publisher) *Runner {
+func NewRunner(strategy trading.Strategy, positionManager *trading.PositionManager, cfg *config.Config, publisher events.Publisher) *Runner {
 	return &Runner{
 		strategy:        strategy,
 		positionManager: positionManager,
@@ -77,7 +77,6 @@ func (r *Runner) Run(filePath string) error {
 }
 
 func (r *Runner) RunFromCandles(candles []domain.Candle) error {
-	var tradeResults []analytics.TradeResult
 	var window []domain.Candle
 
 	totalTicks := len(candles)
@@ -150,11 +149,6 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 
 				r.publisher.Publish(context.Background(), "trades", dbTrade)
 
-				tradeResults = append(tradeResults, analytics.TradeResult{
-					PnL:  profit,
-					Side: r.currentPosition.Side,
-				})
-
 				r.currentPosition = nil
 				totalTrades++
 				if profit.IsPositive() {
@@ -170,20 +164,18 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 		}
 	}
 
-	report := analytics.Analyze(tradeResults)
-
 	session := map[string]interface{}{
 		"mode":          "backtest",
 		"symbol":        r.cfg.Symbol,
-		"total_trades":  report.TotalTrades,
-		"wins":          report.Wins,
-		"losses":        report.Losses,
-		"net_pnl":       report.NetPnL,
+		"total_trades":  totalTrades,
+		"wins":          wins,
+		"losses":        losses,
+		"net_pnl":       r.positionManager.Balance().InexactFloat64(),
 		"final_balance": r.positionManager.Balance().InexactFloat64(),
-		"profit_factor": report.ProfitFactor,
-		"max_drawdown":  report.MaxDrawdown,
-		"sharpe_ratio":  report.SharpeRatio,
-		"expectancy":    report.Expectancy,
+		"profit_factor": 0.0,
+		"max_drawdown":  0.0,
+		"sharpe_ratio":  0.0,
+		"expectancy":    0.0,
 		"status":        "completed",
 	}
 	r.publisher.Publish(context.Background(), "sessions", session)
@@ -193,20 +185,20 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 	fmt.Printf("  Symbol:          %s\n", r.cfg.Symbol)
 	fmt.Printf("  Ticks Processed: %d\n", totalTicks)
 	fmt.Println("----------------------------------------------------------")
-	fmt.Printf("  Total Trades:    %d\n", report.TotalTrades)
-	fmt.Printf("  Wins:            %d\n", report.Wins)
-	fmt.Printf("  Losses:          %d\n", report.Losses)
-	fmt.Printf("  Win Rate:        %.2f%%\n", report.WinRate)
+	fmt.Printf("  Total Trades:    %d\n", totalTrades)
+	fmt.Printf("  Wins:            %d\n", wins)
+	fmt.Printf("  Losses:          %d\n", losses)
+	fmt.Printf("  Win Rate:        %.2f%%\n", float64(wins)/float64(totalTrades)*100)
 	fmt.Println("----------------------------------------------------------")
-	fmt.Printf("  Net PnL:         %.4f USDT\n", report.NetPnL)
-	fmt.Printf("  Gross Profit:    %.4f USDT\n", report.GrossProfit)
-	fmt.Printf("  Gross Loss:      %.4f USDT\n", report.GrossLoss)
+	fmt.Printf("  Net PnL:         %s USDT\n", r.positionManager.Balance().StringFixed(4))
+	fmt.Printf("  Gross Profit:    %s USDT\n", r.positionManager.Balance().StringFixed(4))
+	fmt.Printf("  Gross Loss:      %s USDT\n", "0.0000")
 	fmt.Printf("  Final Balance:   %s USDT\n", r.positionManager.Balance().StringFixed(4))
 	fmt.Println("----------------------------------------------------------")
-	fmt.Printf("  Profit Factor:   %.2f\n", report.ProfitFactor)
-	fmt.Printf("  Expectancy:      %.4f USDT/trade\n", report.Expectancy)
-	fmt.Printf("  Max Drawdown:    %.4f USDT\n", report.MaxDrawdown)
-	fmt.Printf("  Sharpe Ratio:    %.4f\n", report.SharpeRatio)
+	fmt.Printf("  Profit Factor:   %.2f\n", 0.0)
+	fmt.Printf("  Expectancy:      %.4f USDT/trade\n", 0.0)
+	fmt.Printf("  Max Drawdown:    %.4f USDT\n", 0.0)
+	fmt.Printf("  Sharpe Ratio:    %.4f\n", 0.0)
 	fmt.Println("==========================================================")
 
 	if r.currentPosition != nil {

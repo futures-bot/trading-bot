@@ -22,11 +22,16 @@ const (
 	reconnectWait = 1 * time.Second
 )
 
-type Publisher struct {
+type Publisher interface {
+	Publish(ctx context.Context, subject string, data interface{}) error
+	Close()
+}
+
+type natsPublisher struct {
 	nc *nats.Conn
 }
 
-func NewPublisher(natsURL string, opts ...nats.Option) (*Publisher, error) {
+func NewPublisher(natsURL string, opts ...nats.Option) (Publisher, error) {
 	opts = append(opts, nats.Timeout(connectWait))
 	opts = append(opts, nats.MaxReconnects(maxReconnects))
 	opts = append(opts, nats.ReconnectWait(reconnectWait))
@@ -36,10 +41,10 @@ func NewPublisher(natsURL string, opts ...nats.Option) (*Publisher, error) {
 		return nil, err
 	}
 
-	return &Publisher{nc: nc}, nil
+	return &natsPublisher{nc: nc}, nil
 }
 
-func (p *Publisher) Publish(ctx context.Context, subject string, data interface{}) error {
+func (p *natsPublisher) Publish(ctx context.Context, subject string, data interface{}) error {
 	bytes, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -48,6 +53,6 @@ func (p *Publisher) Publish(ctx context.Context, subject string, data interface{
 	return p.nc.Publish(subject, bytes)
 }
 
-func (p *Publisher) Close() {
+func (p *natsPublisher) Close() {
 	p.nc.Close()
 }

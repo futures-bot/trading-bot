@@ -16,15 +16,26 @@ import (
 
 const binanceFuturesKlineURL = "https://testnet.binancefuture.com/fapi/v1/klines"
 
+// Scraper is responsible for scraping historical kline data from Binance.
 type Scraper struct {
-	publisher *events.Publisher
+	publisher events.Publisher
 	client    *http.Client
+	url       string
 }
 
-func New(publisher *events.Publisher) *Scraper {
+func New(publisher events.Publisher) *Scraper {
 	return &Scraper{
 		publisher: publisher,
 		client:    &http.Client{Timeout: 30 * time.Second},
+		url:       binanceFuturesKlineURL,
+	}
+}
+
+func newWithClient(publisher events.Publisher, client *http.Client, url string) *Scraper {
+	return &Scraper{
+		publisher: publisher,
+		client:    client,
+		url:       url,
 	}
 }
 
@@ -84,6 +95,7 @@ func (s *Scraper) scrapeSymbol(ctx context.Context, symbol, interval string, hou
 	sem := make(chan struct{}, 3) // max 3 concurrent requests per symbol
 	var mu sync.Mutex
 	totalSaved := 0
+	var firstErr error
 
 	for i, chunk := range chunks {
 		select {
@@ -101,6 +113,11 @@ func (s *Scraper) scrapeSymbol(ctx context.Context, symbol, interval string, hou
 			klines, err := s.fetchKlines(ctx, c)
 			if err != nil {
 				log.Printf("[%s] chunk %d/%d failed: %v", c.Symbol, idx+1, len(chunks), err)
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
 				return
 			}
 
@@ -134,7 +151,7 @@ type Kline struct {
 
 func (s *Scraper) fetchKlines(ctx context.Context, chunk klineChunk) ([]Kline, error) {
 	url := fmt.Sprintf("%s?symbol=%s&interval=%s&startTime=%d&endTime=%d&limit=1500",
-		binanceFuturesKlineURL, chunk.Symbol, chunk.Interval, chunk.StartMs, chunk.EndMs)
+		s.url, chunk.Symbol, chunk.Interval, chunk.StartMs, chunk.EndMs)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

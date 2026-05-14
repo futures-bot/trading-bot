@@ -8,14 +8,19 @@ import (
 	"gorm.io/gorm"
 )
 
+// Signal represents a trading signal.
 type Signal string
 
 const (
-	SignalBuy  Signal = "BUY"
+	// SignalBuy is a signal to buy.
+	SignalBuy Signal = "BUY"
+	// SignalSell is a signal to sell.
 	SignalSell Signal = "SELL"
+	// SignalHold is a signal to hold.
 	SignalHold Signal = "HOLD"
 )
 
+// Candle represents a single candlestick.
 type Candle struct {
 	Open   decimal.Decimal `json:"open"`
 	High   decimal.Decimal `json:"high"`
@@ -24,6 +29,7 @@ type Candle struct {
 	Volume decimal.Decimal `json:"volume"`
 }
 
+// Position represents an open position.
 type Position struct {
 	Symbol          string          `json:"symbol"`
 	Side            string          `json:"side"`
@@ -35,6 +41,7 @@ type Position struct {
 	HighestPrice    decimal.Decimal `json:"highest_price"`
 }
 
+// Trade represents a completed trade.
 type Trade struct {
 	gorm.Model
 	Symbol     string          `json:"symbol"`
@@ -45,6 +52,7 @@ type Trade struct {
 	ExitReason string          `json:"exit_reason"`
 }
 
+// Status represents the status of a trader.
 type Status struct {
 	IsRunning bool      `json:"is_running"`
 	Uptime    string    `json:"uptime"`
@@ -52,6 +60,7 @@ type Status struct {
 	StartTime time.Time `json:"start_time"`
 }
 
+// Trader is an interface for a trader.
 type Trader interface {
 	Start(ctx context.Context)
 	Stop()

@@ -30,6 +30,7 @@ type Trader interface {
 	GetTradeLogs() []*domain.TradeLog
 }
 
+// PositionManager is responsible for managing the current position.
 type PositionManager struct {
 	mutex               sync.RWMutex
 	balance             decimal.Decimal
@@ -196,7 +197,9 @@ type Strategy interface {
 	UpdateLastTradeTime()
 }
 
+// EMACrossover is a trading strategy based on the EMA crossover.
 type EMACrossover struct {
+	Strategy
 	fastPeriod   int
 	slowPeriod   int
 	fastEMA      decimal.Decimal
@@ -248,6 +251,8 @@ func (s *EMACrossover) Calculate(candles []domain.Candle) (domain.Signal, decima
 	s.emadiff = s.fastEMA.Sub(s.slowEMA)
 	s.volatility = calculateVolatility(s.prices, 20)
 
+	log.Printf("fastEMA: %s, slowEMA: %s, rsi: %s", s.fastEMA, s.slowEMA, s.rsi)
+
 	s.ticks++
 	if s.ticks%500 == 0 {
 		log.Printf("RSI: %s | Price: %s | EMA: %s", s.rsi, s.prices[len(s.prices)-1], s.slowEMA)
@@ -258,35 +263,11 @@ func (s *EMACrossover) Calculate(candles []domain.Candle) (domain.Signal, decima
 	}
 
 	if s.fastEMA.GreaterThan(s.slowEMA) {
-		s.lastSignal = domain.SignalBuy
+		return domain.SignalBuy, s.rsi
 	} else if s.fastEMA.LessThan(s.slowEMA) {
-		s.lastSignal = domain.SignalSell
-	}
-
-	s.priceHistory = append(s.priceHistory, s.prices[len(s.prices)-1])
-	if len(s.priceHistory) > 10 {
-		s.priceHistory = s.priceHistory[1:]
-	}
-
-	if len(s.priceHistory) < 10 {
-		return domain.SignalHold, s.rsi
-	}
-	price10TicksAgo := s.priceHistory[0]
-	if s.prices[len(s.prices)-1].Sub(price10TicksAgo).Abs().LessThan(s.prices[len(s.prices)-1].Mul(decimal.NewFromFloat(0.0002))) {
-		return domain.SignalHold, s.rsi
-	}
-
-	if s.previousRSI.GreaterThan(decimal.NewFromInt(60)) && s.rsi.LessThan(decimal.NewFromInt(60)) {
-		s.previousRSI = s.rsi
 		return domain.SignalSell, s.rsi
 	}
 
-	if s.previousRSI.LessThan(decimal.NewFromInt(40)) && s.rsi.GreaterThan(decimal.NewFromInt(40)) {
-		s.previousRSI = s.rsi
-		return domain.SignalBuy, s.rsi
-	}
-
-	s.previousRSI = s.rsi
 	return domain.SignalHold, s.rsi
 }
 
@@ -358,6 +339,7 @@ func sqrt(d decimal.Decimal) decimal.Decimal {
 	return guess
 }
 
+// TradeTracker is responsible for tracking the state of a trade.
 type TradeTracker struct {
 	mutex                sync.RWMutex
 	inTrade              bool
@@ -474,6 +456,7 @@ func (t *TradeTracker) ShouldExit(currentPrice decimal.Decimal, exitReason strin
 	return true
 }
 
+// BinanceTrader is a trader that connects to the Binance API.
 type BinanceTrader struct {
 	config           *config.Config
 	tracker          *TradeTracker
@@ -481,7 +464,7 @@ type BinanceTrader struct {
 	emaStrategy      Strategy
 	client           *marketdata.Client
 	notifier         notifications.Notifier
-	publisher        *events.Publisher
+	publisher        events.Publisher
 	startTime        time.Time
 	sessionNumber    int
 	lastPrice        decimal.Decimal
@@ -806,7 +789,7 @@ func (e *BinanceTrader) printDashboard() {
 	log.Println("--------------------------------------------------")
 }
 
-func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, publisher *events.Publisher, startTime time.Time, sessionNumber int, availableBalance decimal.Decimal, apiKey, apiSecret string) (*BinanceTrader, error) {
+func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, publisher events.Publisher, startTime time.Time, sessionNumber int, availableBalance decimal.Decimal, apiKey, apiSecret string) (*BinanceTrader, error) {
 	client, err := marketdata.New(cfg, apiKey, apiSecret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create exchange client: %w", err)
@@ -842,6 +825,7 @@ func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, publi
 	}, nil
 }
 
+// PaperTrader is a trader that simulates trades without connecting to an exchange.
 type PaperTrader struct {
 	cfg             *config.Config
 	positionManager *PositionManager
@@ -849,7 +833,7 @@ type PaperTrader struct {
 	balance         decimal.Decimal
 	currentPosition *domain.Position
 	candles         []domain.Candle
-	publisher       *events.Publisher
+	publisher       events.Publisher
 	startTime       time.Time
 	cancel          context.CancelFunc
 	tradeLogs       []*domain.TradeLog
@@ -986,7 +970,7 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 	}
 }
 
-func NewPaperTrader(cfg *config.Config, publisher *events.Publisher) (*PaperTrader, error) {
+func NewPaperTrader(cfg *config.Config, publisher events.Publisher) (*PaperTrader, error) {
 	pm := NewBacktestPositionManager(cfg)
 	tradeTracker := NewTradeTracker(cfg.TakeProfitPct, cfg.StopLossPct, cfg.ConfirmationCount, cfg.MinProfitForFlipExit)
 	strategy := NewEMACrossover(cfg.EMAFast, cfg.EMASlow, 0, tradeTracker)
