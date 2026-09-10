@@ -1,51 +1,93 @@
-# Documentation
+# Corporate Technical Documentation: Enterprise Futures Trading System (EFTS)
 
-## Overview
+This guide provides deep technical details regarding the system's package structures, internal modular architecture, database mapping, NATS event contract, and software maintenance guidelines.
 
-This is a Binance Futures trading bot written in Go. It provides a framework for developing and backtesting trading strategies. The bot is designed to be event-driven and modular, allowing for easy extension and customization.
+---
 
-## Project Structure
+## 1. System Package Architecture
 
-The project is organized into the following directories:
+The EFTS codebase is organized as a structured, modular monorepo containing decoupled backend packages. Cyclic dependencies are strictly prohibited, and interface-driven design is utilized for easy mocking and unit testing.
 
-- `cmd/`: Contains the main application entrypoint.
-- `data/`: Contains historical market data and trade logs.
-- `docs/`: Contains architecture and coding standards documentation.
-- `internal/`: Contains the core application logic.
-  - `backtest/`: The backtesting engine.
-  - `config/`: Application configuration.
-  - `database/`: Database repository and models.
-  - `events/`: NATS event publisher.
-  - `marketdata/`: Binance market data client.
-  - `notifications/`: Telegram notifications.
-  - `scraper/`: Historical data scraper.
-  - `strategy/`: Trading strategies.
-  - `trading/`: Core trading logic.
-- `shared/`: Shared code between services.
-  - `eventdef/`: Standardized event definitions.
-- `workflows/`: Task-oriented workflows for common development tasks.
+```
+/trading-bot/
+├── main.go                     # Unified Application entry point (CMD Router)
+├── config.yaml                 # Static system & strategic parameter definitions
+├── .env                        # Cryptographic secrets & environmental variables
+├── go.mod                      # Dependency management
+├── internal/
+│   ├── cmd/                    # CLI commands implementation & execution loops
+│   ├── config/                 # YAML & ENV parser/config validator
+│   ├── database/               # GORM PostgreSQL repository, models, and transactions
+│   ├── events/                 # NATS publisher wrappers (schema-enforcing)
+│   ├── logger/                 # Production file & console logger (Lumberjack)
+│   ├── marketdata/             # REST/WebSocket bindings for Binance Exchange
+│   ├── notifications/          # Resilient Telegram/Null dispatchers
+│   ├── scraper/                # Concurrent historical kline harvester
+│   ├── strategy/               # Technical indicator calculations & trade signal logic
+│   └── trading/                # Position management, trade tracker, & order engines
+│       ├── domain/             # Unified entity types (Trade, Position, Signal, etc.)
+│       └── ...
+└── shared/
+    └── eventdef/               # Enterprise NATS telemetry schemas (shared payload definitions)
+```
 
-## Workflows
+---
 
-The `workflows` directory contains a set of predefined workflows for common development tasks. These workflows are designed to be executed by an AI assistant like Cline to ensure consistency and adherence to the project architecture.
+## 2. Component Design & Responsibility Matrix
 
-- `add_metric.md`: A workflow for adding a new analytics metric to the `bot-analytics` service.
-- `event_schema_workflow.md`: A workflow for standardizing NATS events.
-- `persistence_workflow.md`: A workflow for implementing the persistence layer.
+### `internal/cmd` (CLI Executive Interface)
+Acts as the central router and lifecycle coordinator. Handles POSIX system signals (`SIGINT`, `SIGTERM`) to gracefully close exchange WebSocket streams, flush buffered database logs, publish final session stats to NATS, and notify developers of normal or emergency shutdowns.
 
-## Configuration
+### `internal/trading` (Execution and Position Management)
+Maintains thread-safe in-memory state of active positions and orders. It supports two main transaction executors:
+1. **PaperTrader:** Simulates execution locally using real-time price feeds. All metrics are computed and stored exactly as if real-money execution took place.
+2. **BinanceTrader:** Communicates with the Binance Futures Testnet REST and WebSocket APIs. Performs automated position size formatting, leverage checks, and margin monitoring.
 
-The bot is configured through a `config.yaml` file and a `.env` file.
+### `internal/database` (Data Integrity & Storage)
+Encapsulates PostgreSQL transaction layers. GORM is configured with:
+* Direct index creations on critical query paths (e.g., `symbol`, `created_at`).
+* Safe connection pool bounds (`MaxOpenConns = 10`, `MaxIdleConns = 5`, `ConnMaxLifetime = 1h`).
+* Soft-delete capability and transaction-wrapped mutations for audit logs and account states.
 
-- `config.yaml`: Contains trading parameters such as the symbol to trade, leverage, and strategy parameters.
-- `.env`: Contains environment variables such as API keys, NATS URL, and Telegram bot token.
+### `internal/scraper` (Concurrent Ingestion Channel)
+A high-throughput harvester designed to fetch historical candle data (klines) from public market endpoints. Implements:
+* Goroutine worker pools grouping parallel symbol downloads.
+* Auto-backtesting loop activation upon completion of symbol historical streams.
+* Transient error retries utilizing exponential backoff algorithms.
 
-## Usage
+---
 
-The bot can be run in several modes:
+## 3. Communication Model: NATS Event Schema
 
-- `run`: Runs the scraper, paper trader, testnet trader, and backtester concurrently.
-- `backtest`: Runs a backtest on historical data.
-- `paper`: Starts paper trading.
-- `testnet`: Starts testnet trading.
-- `scrape`: Scrapes historical kline data from Binance.
+To decouple reporting and operations, EFTS publishes standardized structural messages onto a centralized NATS bus. All events follow the core envelope design defined in `shared/eventdef`.
+
+### Standard Event Envelope Schema
+```json
+{
+  "event_id": "uuid-v4-identifier",
+  "event_type": "trade.closed",
+  "version": 1,
+  "timestamp": "2026-09-10T14:32:00.123Z",
+  "source": "paper-trader",
+  "payload": {}
+}
+```
+
+### Event Topics and Subjects
+
+*   **`trades`** (Subject: `trade.closed` / `trade.opened`):
+    Fires when an executor takes action. The payload contains final performance indicators (prices, profits, exact exit reason trigger like `STOP_LOSS`, `TAKE_PROFIT`, or `RSI_EXHAUSTION`).
+*   **`sessions`** (Subject: `session.completed`):
+    Dispatched when a rotating session (e.g., hourly cycle) ends. Transmits analytical performance summaries (Win/Loss numbers, Sharpe Ratio, Profit Factor, Drawdowns).
+*   **`klines.<symbol>`** (Subject: `kline.new`):
+    Published by the concurrent scraper when new historical chunks are integrated into the DB.
+
+---
+
+## 4. Operational Safety Controls
+
+The platform implements programmatic protective controls:
+1. **Precision Assurance:** All financial quantities use the `decimal.Decimal` arbitrary-precision framework. Conversions to/from floats are strictly prohibited during runtime calculations.
+2. **State Cooldowns:** The trade executor enforces a state-lock during the `loss_cooldown` or `win_cooldown` tick limits, preventing rapid order loops.
+3. **Budget Bounds:** The system validates that each order matches the specified `session_budget` constraint before dispatching orders to the exchange.
+4. **Panic Protections:** Recovery wrappers run on all background threads, catching panics, logging stack traces to database records, publishing a failure event on NATS, and issuing a high-priority alert via Telegram.

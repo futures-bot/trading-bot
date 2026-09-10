@@ -1,213 +1,143 @@
-# Quick Start Guide
+# Operations Runbook: Developer & Operator Quick Start
 
-Get the trading bot running in 5 minutes.
+This guide covers local environment provisioning, project dependency compilation, secrets configuration, and CLI runtime command flows.
 
-## Prerequisites
+---
 
-- Go 1.21+
-- PostgreSQL database (Supabase recommended for free tier)
-- Binance Futures Testnet API keys (for testnet trading)
-- Telegram Bot token (optional, for notifications)
+## 1. System Requirements
 
-## Local Setup
+*   **Go Compiler:** Version `1.22` or greater (leveraging standard performance profiles, type constraints, and structured logging).
+*   **Database:** PostgreSQL 14+ database instance (e.g., Supabase or corporate RDS).
+*   **Event Broker:** NATS Server (local or managed instance) for event streaming telemetry.
+*   **Exchange Sandbox:** Active Binance Futures Testnet account API credentials.
 
-### 1. Clone & Install
+---
+
+## 2. Setting Up the Local Workspace
+
+### A. Clone and Compile
+Clone the repository and build the production-ready CLI binary locally:
 
 ```bash
+# Clone the repository
 git clone https://github.com/bercho001-cpu/trading-bot.git
 cd trading-bot
+
+# Synchronize modules and compile the executable
 go mod download
-go build -o trading-bot
+go build -o trading-bot main.go
 ```
 
-### 2. Configure .env
+### B. Configure System Secrets (`.env`)
+Create a custom `.env` file at the root of your project directory. This file is excluded from git tracking to prevent credential leaks.
 
 ```bash
-cat > .env << EOF
-DATABASE_URL="host=db.supabase.co port=5432 user=postgres password=YOUR_PASSWORD dbname=postgres sslmode=require"
-BINANCE_API_KEY=your_testnet_api_key
-BINANCE_SECRET_KEY=your_testnet_secret_key
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token    # Optional
-TELEGRAM_CHAT_ID=your_telegram_chat_id        # Optional
-EOF
+# PostgreSQL Connection Configuration (Strict Key-Value Format)
+DATABASE_URL="host=your-db-host.supabase.co port=5432 user=postgres password=your_secure_password dbname=postgres sslmode=require"
+
+# NATS Event Broker Configuration
+NATS_URL="nats://localhost:4222"
+NATS_CREDS_FILE="" # Leave empty if using unauthenticated local NATS; provide file path for TLS credentials in production
+
+# Exchange Sandbox Credentials (from https://testnet.binancefuture.com)
+BINANCE_API_KEY="your_binance_testnet_api_key_here"
+BINANCE_SECRET_KEY="your_binance_testnet_secret_key_here"
+
+# Operational Notifications (Optional)
+TELEGRAM_BOT_TOKEN="your_bot_api_token"
+TELEGRAM_CHAT_ID="your_channel_or_group_numeric_id"
 ```
 
-### 3. Configure config.yaml (optional)
+*Note: In the `DATABASE_URL` format, always use key-value format as complex password strings containing special symbols can disrupt standard URL-parsing utilities.*
 
-Default settings are in `config.yaml`. Adjust if needed:
-- `symbol`: Trading pair (default: XRPUSDT)
-- `leverage`: 1-10x (default: 10)
-- `session_budget`: USDT per trade (default: 100)
-- `ema_fast`, `ema_slow`: EMA periods (default: 9, 21)
+### C. Verify Static Strategy Parameters (`config.yaml`)
+Validate indicators and risk rules inside `config.yaml`:
 
-### 4. Run Commands
-
-**Backtest on historical data:**
-```bash
-./trading-bot scrape              # Download 24h of klines + auto-backtest
-./trading-bot backtest            # Run backtest on downloaded data
+```yaml
+symbol: "XRPUSDT"              # Trading pair
+leverage: 10                  # Target contract leverage
+session_budget: 100.0         # USDT margin sizing per trade
+ema_fast: 9                   # Fast EMA window
+ema_slow: 21                  # Slow EMA window
+min_ema_gap: 0.001            # Threshold delta separating EMAs
+take_profit_pct: 0.5          # Take profit threshold (%)
+stop_loss_pct: 0.2            # Stop loss safety cap (%)
+break_even_trigger_pct: 0.1   # Threshold to shift SL to entry (%)
+trail_distance_pct: 0.1       # Trailing buffer distance (%)
+confirmation_count: 3         # Consecutive ticks needed to confirm entry signals
+min_profit_for_flip_exit: 0.1 # Minimum profit to allow signal flip exits
+paper_balance: 1000.0         # Virtual balance initialization cap
+loss_cooldown: 60             # Operational cooldown ticks after loss
+win_cooldown: 60              # Operational cooldown ticks after win
+session_duration_min: 60      # Auto-rotation interval length (minutes)
+backtest_file: "data/trades.jsonl" # Default backup file path for offline simulation
 ```
 
-**Paper trading (simulated, with real prices):**
-```bash
-./trading-bot paper               # Auto-rotating 1hr sessions
-```
+---
 
-**Testnet trading (real orders, no real money):**
-```bash
-./trading-bot testnet             # Auto-rotating 1hr sessions on Binance testnet
-```
+## 3. Basic CLI Command Workflows
 
-**Run everything (24/7 on GCP):**
-```bash
-./trading-bot run                 # Scrape + paper + testnet + backtest concurrently
-```
+To ensure proper data flows, complete operations in this sequence:
 
-## Cloud Deployment (GCP)
-
-### 1. Create GCP VM
-
-```bash
-gcloud compute instances create trading-bot \
-  --zone=us-east1-c \
-  --machine-type=e2-micro \
-  --image=debian-11
-```
-
-### 2. SSH & Install Bot
+### Step 1: Historical Data Ingestion (Scraping)
+Scrape candle data from public Binance APIs to prep your database for strategic backtests:
 
 ```bash
-gcloud compute ssh trading-bot --zone=us-east1-c
-# On the VM:
-curl -OL https://go.dev/dl/go1.21.linux-amd64.tar.gz
-tar -C /usr/local -xzf go1.21.linux-amd64.tar.gz
-export PATH=$PATH:/usr/local/go/bin
+# Scrape the symbol specified in config.yaml and trigger auto-backtesting on completion
+./trading-bot scrape
 
-git clone https://github.com/bercho001-cpu/trading-bot.git
-cd trading-bot
-go build -o trading-bot
+# Scrape specific asset symbols concurrently
+./trading-bot scrape BTCUSDT ETHUSDT SOLUSDT
 ```
 
-### 3. Configure & Run as Service
+### Step 2: Off-line Backtesting Simulation
+Test strategic parameters over historical datasets without committing capital:
 
 ```bash
-# Upload .env file
-gcloud compute scp .env trading-bot:~
+# Run backtest using historical kline rows saved in the DB
+./trading-bot backtest
 
-# Create systemd service
-gcloud compute ssh trading-bot --zone=us-east1-c --command='
-cat | sudo tee /etc/systemd/system/trading-bot.service << EOFSERVICE
-[Unit]
-Description=Trading Bot
-After=network.target
-
-[Service]
-User=fer
-WorkingDirectory=/home/fer
-ExecStart=/home/fer/trading-bot run
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOFSERVICE
-'
-
-# Start the service
-gcloud compute ssh trading-bot --zone=us-east1-c --command='sudo systemctl enable trading-bot && sudo systemctl start trading-bot'
+# Run backtest using local JSONL files
+./trading-bot backtest data/market_pulse.jsonl
 ```
 
-### 4. Monitor
+### Step 3: Real-Time Paper Sandbox Simulation
+Validate latency and indicator computations using real-time Binance WebSocket price feeds:
 
 ```bash
-# Check status
-gcloud compute ssh trading-bot --zone=us-east1-c --command='sudo systemctl status trading-bot'
-
-# View logs
-gcloud compute ssh trading-bot --zone=us-east1-c --command='sudo journalctl -u trading-bot -f'
-
-# Check API health
-curl http://35.196.16.129:8080/api/health
+# Paper trading with automated hourly session rotations and simulated orders
+./trading-bot paper
 ```
 
-## Dashboard
-
-Deploy the dashboard on Vercel for real-time monitoring:
+### Step 4: Active Staging Execution
+Trigger dry-run trading on the actual Binance Testnet using real API connections:
 
 ```bash
-git clone https://github.com/bercho001-cpu/trading-bot-dashboard.git
-cd trading-bot-dashboard
-
-# Configure .env.local
-cat > .env.local << EOF
-NEXT_PUBLIC_API_URL=http://YOUR_BOT_IP:8080
-NEXT_PUBLIC_API_KEY=optional_api_key
-EOF
-
-# Run locally
-npm run dev
-# Visit http://localhost:3000
-
-# Deploy to Vercel
-vercel --prod
+# Execute dry-run market orders on the Binance Futures Testnet sandbox
+./trading-bot testnet
 ```
 
-## API Endpoints
-
-All endpoints are **REST** (HTTP GET only), return JSON:
-
-- `GET /api/health` — Check if bot is running
-- `GET /api/stats` — Overall statistics
-- `GET /api/trades?limit=50` — Latest trades
-- `GET /api/sessions?limit=50` — All sessions
-- `GET /api/sessions/latest` — Latest session per mode
-- `GET /api/performance?mode=all` — Performance metrics
-
-See [API.md](./API.md) for full documentation.
-
-## Troubleshooting
-
-### "Connection timeout" to Binance
-
-Make sure your `.env` has:
-- `BINANCE_API_KEY` and `BINANCE_SECRET_KEY` (testnet keys from https://testnet.binancefuture.com)
-- Testnet API endpoint is used by default (no firewall issues)
-
-### Database connection error
-
-1. Check `DATABASE_URL` format: `host=... port=... user=... password=... dbname=... sslmode=require`
-2. Make sure Supabase instance is running
-3. Verify firewall allows your IP
-
-### Bot crashes with "panic: invalid memory address"
-
-This usually means the database connection failed or a required API key is missing. Check logs:
+### Step 5: High-Resilience Continuous Operation (24/7 Staging)
+Launch all components (scraper, auto-backtest scheduler, paper sandbox, testnet execution) concurrently as an enterprise-grade daemon:
 
 ```bash
-gcloud compute ssh trading-bot --zone=us-east1-c --command='sudo journalctl -u trading-bot -n 100'
+# Runs ingestion, backtesting, simulation, and testnet execution concurrently 24/7
+./trading-bot run
 ```
 
-## Next Steps
+---
 
-1. ✅ Backtest the strategy
-2. ✅ Run paper trading for validation
-3. ✅ Deploy to GCP VM
-4. ✅ Monitor via dashboard on Vercel
-5. 📋 Later: Add authentication to dashboard
-6. 📋 Later: Add rate limiting
-7. 📋 Later: Add more indicators/strategies
+## 4. Operational Monitoring Commands
 
-## Resources
+Query structural logs and metric performance from your terminal:
 
-- [API Documentation](./API.md) — Full REST API reference
-- [README](./README.md) — Strategy details & architecture
-- [Deployment Guide](./DEPLOYMENT_GUIDE.md) — GCP setup & firewall config
-- [Dashboard Deployment](./VERCEL_SETUP.md) — Vercel setup guide
+```bash
+# Check the last 20 trade executions and exit triggers
+./trading-bot trades
 
-## Support
+# Retrieve the 10 most recent session records and risk-adjusted metrics
+./trading-bot sessions
 
-For issues, check:
-1. Bot logs: `journalctl -u trading-bot`
-2. Database logs: Query `bot_logs`, `trade_logs` tables in Supabase
-3. API health: `curl http://localhost:8080/api/health`
-4. GitHub Issues: https://github.com/bercho001-cpu/trading-bot/issues
+# Display overall portfolio lifetime performance and PnL totals
+./trading-bot stats
+```
