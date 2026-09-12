@@ -8,9 +8,9 @@ import (
 )
 
 type Config struct {
-	Symbol               string  `yaml:"symbol"`
-	Leverage             int     `yaml:"leverage"`
-	SessionBudget        float64 `yaml:"session_budget"`
+	Symbols              []string `yaml:"symbols"`
+	Leverage             int      `yaml:"leverage"`
+	SessionBudget        float64  `yaml:"session_budget"`
 	EMAFast              int     `yaml:"ema_fast"`
 	EMASlow              int     `yaml:"ema_slow"`
 	MinEMAGap            float64 `yaml:"min_ema_gap"`

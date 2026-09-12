@@ -41,7 +41,7 @@ func TestScraper(t *testing.T) {
 	defer server.Close()
 
 	publisher := &MockPublisher{}
-	scraper := newWithClient(publisher, server.Client(), server.URL)
+	scraper := newWithClient(publisher, nil, server.Client(), server.URL)
 
 	count, err := scraper.ScrapeSymbols(context.Background(), []string{"BTCUSDT"}, "1m", 1)
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"trading-bot/internal/config"
-	"trading-bot/internal/trading/domain"
+	"trading-bot/internal/marketdata"
 	"trading-bot/shared/eventdef"
 
 	"github.com/shopspring/decimal"
@@ -37,32 +37,44 @@ func TestPaperTrader(t *testing.T) {
 		ConfirmationCount:    3,
 		MinProfitForFlipExit: 0.005,
 		SessionDurationMin:   1,
-		Symbol:               "BTCUSDT",
+		Symbols:              []string{"BTCUSDT"},
 	}
 	publisher := &MockPublisher{}
-	trader, err := NewPaperTrader(cfg, publisher)
+	trader, err := NewPaperTrader(cfg, publisher, "BTCUSDT", nil)
 	if err != nil {
 		t.Fatalf("Error creating paper trader: %v", err)
 	}
 
+	// Inject custom price channel for the test
+	priceCh := make(chan marketdata.PriceUpdate, 100)
+	trader.PriceUpdateCh = priceCh
+
 	ctx, cancel := context.WithCancel(context.Background())
 	go trader.Start(ctx)
 
-	// Give the trader time to start
-	time.Sleep(2 * time.Second)
-
-	// Simulate a buy signal
+	// Simulate a price trend to trigger a buy signal (EMA crossover)
 	price := decimal.NewFromInt(100)
-	trader.candles = make([]domain.Candle, 30)
 	for i := 0; i < 30; i++ {
 		price = price.Add(decimal.NewFromInt(1))
-		trader.candles[i] = domain.Candle{Close: price}
+		priceCh <- marketdata.PriceUpdate{
+			Symbol: "BTCUSDT",
+			Price:  price.String(),
+		}
+		// Yield slightly to let trader process
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	time.Sleep(2 * time.Second)
+	// Let it process the remaining queued events
+	time.Sleep(500 * time.Millisecond)
 
-	if trader.currentPosition == nil {
-		t.Errorf("Expected a position to be opened")
+	// Safely verify if a position was taken.
+	hasPosition := false
+	if trader.GetCurrentPosition() != nil {
+		hasPosition = true
+	}
+
+	if !hasPosition {
+		t.Errorf("Expected a position to be opened based on EMA crossover")
 	}
 
 	cancel()

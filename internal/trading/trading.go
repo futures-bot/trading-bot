@@ -12,6 +12,7 @@ import (
 	"trading-bot/internal/events"
 	"trading-bot/internal/marketdata"
 	"trading-bot/internal/notifications"
+	"trading-bot/internal/risk"
 	"trading-bot/internal/trading/domain"
 	"trading-bot/shared/eventdef"
 
@@ -33,62 +34,53 @@ type Trader interface {
 
 // PositionManager is responsible for managing the current position.
 type PositionManager struct {
-	mutex               sync.RWMutex
-	balance             decimal.Decimal
-	maxRiskPerTrade     decimal.Decimal
-	currentPosition     *domain.Position
-	leverage            decimal.Decimal
-	sessionBudget       float64
-	restClient          *marketdata.RestClient
-	takeProfitPct       decimal.Decimal
-	stopLossPct         decimal.Decimal
-	breakEvenTriggerPct decimal.Decimal
-	trailDistancePct    decimal.Decimal
+	mutex           sync.RWMutex
+	balance         decimal.Decimal
+	currentPosition *domain.Position
+	riskEngine      *risk.Engine
 }
 
-func NewPositionManager(balance decimal.Decimal, maxRiskPerTrade decimal.Decimal, leverage int, sessionBudget float64, restClient *marketdata.RestClient, takeProfitPct, stopLossPct, breakEvenTriggerPct, trailDistancePct float64) *PositionManager {
+func NewPositionManager(balance decimal.Decimal, maxRiskPerTrade decimal.Decimal, leverage int, sessionBudget float64, restClient *marketdata.RestClient, cfg *config.Config, sharedBudget *risk.SharedBudget) *PositionManager {
+	engine := risk.NewEngine(cfg, restClient.StepSize)
+	engine.SharedBudget = sharedBudget
 	return &PositionManager{
-		balance:             balance,
-		maxRiskPerTrade:     maxRiskPerTrade,
-		leverage:            decimal.NewFromInt(int64(leverage)),
-		sessionBudget:       sessionBudget,
-		restClient:          restClient,
-		takeProfitPct:       decimal.NewFromFloat(takeProfitPct),
-		stopLossPct:         decimal.NewFromFloat(stopLossPct),
-		breakEvenTriggerPct: decimal.NewFromFloat(breakEvenTriggerPct),
-		trailDistancePct:    decimal.NewFromFloat(trailDistancePct),
+		balance:    balance,
+		riskEngine: engine,
 	}
 }
 
-func NewBacktestPositionManager(cfg *config.Config) *PositionManager {
+func NewBacktestPositionManager(cfg *config.Config, sharedBudget *risk.SharedBudget) *PositionManager {
+	engine := risk.NewEngine(cfg, decimal.NewFromFloat(0.01))
+	engine.SharedBudget = sharedBudget
 	return &PositionManager{
-		balance:             decimal.NewFromFloat(cfg.PaperBalance),
-		maxRiskPerTrade:     decimal.NewFromFloat(0.1),
-		leverage:            decimal.NewFromInt(int64(cfg.Leverage)),
-		sessionBudget:       cfg.SessionBudget,
-		restClient:          &marketdata.RestClient{StepSize: decimal.NewFromFloat(0.01)},
-		takeProfitPct:       decimal.NewFromFloat(cfg.TakeProfitPct),
-		stopLossPct:         decimal.NewFromFloat(cfg.StopLossPct),
-		breakEvenTriggerPct: decimal.NewFromFloat(cfg.BreakEvenTriggerPct),
-		trailDistancePct:    decimal.NewFromFloat(cfg.TrailDistancePct),
+		balance:    decimal.NewFromFloat(cfg.PaperBalance),
+		riskEngine: engine,
 	}
 }
 
-func (pm *PositionManager) CalculatePositionSize(price decimal.Decimal, availableBalance decimal.Decimal) (decimal.Decimal, error) {
+func (pm *PositionManager) ReleaseBudget(p *domain.Position) {
+	if pm.riskEngine.SharedBudget != nil && p != nil {
+		leverage := pm.riskEngine.Leverage
+		if leverage.IsZero() {
+			leverage = decimal.NewFromInt(1)
+		}
+		cost := p.Quantity.Mul(p.Price).Div(leverage)
+		pm.riskEngine.SharedBudget.Release(cost)
+		log.Printf("[RISK] Released %s USDT back to shared budget", cost.StringFixed(2))
+	}
+}
+
+func (pm *PositionManager) ReleaseMargin(amount decimal.Decimal) {
+	if pm.riskEngine.SharedBudget != nil && !amount.IsZero() {
+		pm.riskEngine.SharedBudget.Release(amount)
+		log.Printf("[RISK] Released failed order margin %s USDT back to shared budget", amount.StringFixed(2))
+	}
+}
+
+func (pm *PositionManager) CalculatePositionSize(price decimal.Decimal, availableBalance decimal.Decimal, trendStrength decimal.Decimal) (decimal.Decimal, error) {
 	pm.mutex.RLock()
 	defer pm.mutex.RUnlock()
-
-	positionValue := decimal.NewFromFloat(pm.sessionBudget)
-	quantity := positionValue.Div(price)
-
-	if quantity.IsZero() {
-		return decimal.Zero, errors.New("calculated quantity is zero")
-	}
-
-	if pm.restClient.StepSize.IsZero() {
-		return quantity, nil
-	}
-	return quantity.Div(pm.restClient.StepSize).Floor().Mul(pm.restClient.StepSize), nil
+	return pm.riskEngine.CalculatePositionSize(price, availableBalance, trendStrength)
 }
 
 func (pm *PositionManager) Balance() decimal.Decimal {
@@ -104,11 +96,11 @@ func (pm *PositionManager) UpdateBalance(profit decimal.Decimal) {
 }
 
 func (pm *PositionManager) GetTakeProfitPct() decimal.Decimal {
-	return pm.takeProfitPct
+	return pm.riskEngine.TakeProfitPct
 }
 
 func (pm *PositionManager) GetStopLossPct() decimal.Decimal {
-	return pm.stopLossPct
+	return pm.riskEngine.StopLossPct
 }
 
 func (pm *PositionManager) SetCurrentPosition(p *domain.Position) {
@@ -121,81 +113,14 @@ func (pm *PositionManager) SetCurrentPosition(p *domain.Position) {
 func (pm *PositionManager) Evaluate(currentPrice, rsi decimal.Decimal) (exit bool, reason string) {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
-
-	if pm.currentPosition == nil {
-		return false, ""
-	}
-
-	p := pm.currentPosition
-
-	var currentProfitPct decimal.Decimal
-	if p.Side == string(domain.SignalBuy) {
-		currentProfitPct = currentPrice.Sub(p.Price).Div(p.Price)
-	} else {
-		currentProfitPct = p.Price.Sub(currentPrice).Div(p.Price)
-	}
-
-	if !p.IsBreakEvenSet && currentProfitPct.GreaterThanOrEqual(pm.breakEvenTriggerPct) {
-		p.StopLossPrice = p.Price
-		p.IsBreakEvenSet = true
-		log.Println("[SAFETY] Move StopLoss to Break-Even")
-	}
-
-	if p.IsBreakEvenSet {
-		if p.Side == string(domain.SignalBuy) {
-			if currentPrice.GreaterThan(p.HighestPrice) {
-				p.HighestPrice = currentPrice
-				newSL := p.HighestPrice.Mul(decimal.NewFromFloat(1).Sub(pm.trailDistancePct))
-				if newSL.GreaterThan(p.StopLossPrice) {
-					p.StopLossPrice = newSL
-				}
-			}
-		} else {
-			if currentPrice.LessThan(p.HighestPrice) {
-				p.HighestPrice = currentPrice
-				newSL := p.HighestPrice.Mul(decimal.NewFromFloat(1).Add(pm.trailDistancePct))
-				if newSL.LessThan(p.StopLossPrice) {
-					p.StopLossPrice = newSL
-				}
-			}
-		}
-	}
-
-	if p.Side == string(domain.SignalBuy) {
-		if currentPrice.GreaterThanOrEqual(p.TakeProfitPrice) {
-			return true, "TAKE_PROFIT"
-		}
-		if currentPrice.LessThanOrEqual(p.StopLossPrice) {
-			if p.IsBreakEvenSet {
-				return true, "BREAK_EVEN"
-			}
-			return true, "STOP_LOSS"
-		}
-	} else if p.Side == string(domain.SignalSell) {
-		if currentPrice.GreaterThanOrEqual(p.StopLossPrice) {
-			if p.IsBreakEvenSet {
-				return true, "BREAK_EVEN"
-			}
-			return true, "STOP_LOSS"
-		}
-		if currentPrice.LessThanOrEqual(p.TakeProfitPrice) {
-			return true, "TAKE_PROFIT"
-		}
-	}
-
-	if p.Side == string(domain.SignalBuy) && rsi.GreaterThan(decimal.NewFromInt(70)) {
-		return true, "RSI_EXHAUSTION"
-	} else if p.Side == string(domain.SignalSell) && rsi.LessThan(decimal.NewFromInt(30)) {
-		return true, "RSI_EXHAUSTION"
-	}
-
-	return false, ""
+	return pm.riskEngine.EvaluateExit(pm.currentPosition, currentPrice, rsi)
 }
 
 // Strategy defines the interface for a trading strategy.
 type Strategy interface {
 	Calculate([]domain.Candle) (domain.Signal, decimal.Decimal)
 	UpdateLastTradeTime()
+	TrendStrength() decimal.Decimal
 }
 
 // EMACrossover is a trading strategy based on the EMA crossover.
@@ -226,6 +151,13 @@ func NewEMACrossover(fastPeriod, slowPeriod int, cooldown time.Duration, tradeTr
 }
 
 func (s *EMACrossover) UpdateLastTradeTime() {}
+
+func (s *EMACrossover) TrendStrength() decimal.Decimal {
+	if s.slowEMA.IsZero() {
+		return decimal.Zero
+	}
+	return s.emadiff.Abs().Div(s.slowEMA)
+}
 
 func (s *EMACrossover) GetRSI() decimal.Decimal        { return s.rsi }
 func (s *EMACrossover) GetEMAGap() decimal.Decimal     { return s.emadiff }
@@ -459,7 +391,8 @@ func (t *TradeTracker) ShouldExit(currentPrice decimal.Decimal, exitReason strin
 
 // BinanceTrader is a trader that connects to the Binance API.
 type BinanceTrader struct {
-	config           *config.Config
+	symbol      string
+	config      *config.Config
 	tracker          *TradeTracker
 	pm               *PositionManager
 	emaStrategy      Strategy
@@ -532,7 +465,7 @@ func (e *BinanceTrader) Run(ctx context.Context) {
 	defer sessionTimer.Stop()
 
 	priceCh := make(chan marketdata.PriceUpdate)
-	go e.client.Start(ctx, e.config.Symbol, priceCh)
+	go e.client.Start(ctx, e.symbol, priceCh)
 
 	dashboardTicker := time.NewTicker(10 * time.Second)
 	defer dashboardTicker.Stop()
@@ -556,7 +489,7 @@ func (e *BinanceTrader) Run(ctx context.Context) {
 			if e.tracker.InTrade() {
 				if exit, reason := e.pm.Evaluate(e.lastPrice, rsi); exit {
 					log.Printf("EXIT TRIGGER: %s reached", reason)
-					quantity, err := e.pm.CalculatePositionSize(e.lastPrice, e.availableBalance)
+					quantity, err := e.pm.CalculatePositionSize(e.lastPrice, e.availableBalance, decimal.Zero)
 					if err != nil {
 						log.Printf("Failed to calculate position size for exit: %v", err)
 						return
@@ -596,7 +529,7 @@ func (e *BinanceTrader) executeBuy(ctx context.Context) {
 	if !e.tracker.InTrade() && e.tracker.CanTrade() {
 		e.tracker.SetLastTradeAttempt()
 		log.Print("Buy signal")
-		quantity, err := e.pm.CalculatePositionSize(e.lastPrice, e.availableBalance)
+		quantity, err := e.pm.CalculatePositionSize(e.lastPrice, e.availableBalance, e.emaStrategy.TrendStrength())
 		if err != nil {
 			log.Printf("Failed to calculate position size: %v", err)
 		} else {
@@ -609,7 +542,7 @@ func (e *BinanceTrader) executeSell(ctx context.Context) {
 	if !e.tracker.InTrade() && e.tracker.CanTrade() {
 		e.tracker.SetLastTradeAttempt()
 		log.Print("Sell signal")
-		quantity, err := e.pm.CalculatePositionSize(e.lastPrice, e.availableBalance)
+		quantity, err := e.pm.CalculatePositionSize(e.lastPrice, e.availableBalance, e.emaStrategy.TrendStrength())
 		if err != nil {
 			log.Printf("Failed to calculate position size: %v", err)
 		} else {
@@ -619,9 +552,17 @@ func (e *BinanceTrader) executeSell(ctx context.Context) {
 }
 
 func (e *BinanceTrader) openPosition(ctx context.Context, side futures.SideType, quantity decimal.Decimal) {
-	formattedQuantity := quantity.StringFixed(2)
-	order, err := e.client.PlaceOrder(ctx, e.config.Symbol, side, formattedQuantity)
+	formattedQuantity := quantity.StringFixed(e.client.QuantityPrecision)
+	order, err := e.client.PlaceOrder(ctx, e.symbol, side, formattedQuantity)
 	if err != nil {
+		// Release failed order budget back to shared budget
+		leverage := e.pm.riskEngine.Leverage
+		if leverage.IsZero() {
+			leverage = decimal.NewFromInt(1)
+		}
+		marginCost := quantity.Mul(e.lastPrice).Div(leverage)
+		e.pm.ReleaseMargin(marginCost)
+
 		if apiErr, ok := err.(*common.APIError); ok && apiErr.Code == -2019 {
 			e.hardShutdown("MARGIN_CALL")
 		} else {
@@ -631,11 +572,11 @@ func (e *BinanceTrader) openPosition(ctx context.Context, side futures.SideType,
 	}
 
 	log.Printf("Placed order: %+v", order)
-	go e.notifier.Notify(fmt.Sprintf("Position opened: %s %s @ %s", side, quantity.StringFixed(2), e.lastPrice.StringFixed(2)))
+	go e.notifier.Notify(fmt.Sprintf("Position opened: %s %s @ %s", side, quantity.StringFixed(e.client.QuantityPrecision), e.lastPrice.StringFixed(e.client.PricePrecision)))
 
 	entryPrice := decimal.Zero
 	time.Sleep(1 * time.Second)
-	trades, err := e.client.GetAccountTradeList(ctx, e.config.Symbol, order.OrderID)
+	trades, err := e.client.GetAccountTradeList(ctx, e.symbol, order.OrderID)
 	if err != nil {
 		log.Printf("Failed to get account trade list for entry price: %v", err)
 	} else if len(trades) > 0 {
@@ -644,7 +585,7 @@ func (e *BinanceTrader) openPosition(ctx context.Context, side futures.SideType,
 
 	if entryPrice.IsZero() {
 		time.Sleep(2 * time.Second)
-		trades, err = e.client.GetAccountTradeList(ctx, e.config.Symbol, order.OrderID)
+		trades, err = e.client.GetAccountTradeList(ctx, e.symbol, order.OrderID)
 		if err != nil {
 			log.Printf("Failed to get account trade list for entry price on retry: %v", err)
 		} else if len(trades) > 0 {
@@ -654,10 +595,18 @@ func (e *BinanceTrader) openPosition(ctx context.Context, side futures.SideType,
 
 	if entryPrice.IsZero() {
 		log.Print("Could not determine entry price, aborting trade")
+		// Release allocated margin cost back and reset tracker state
+		leverage := e.pm.riskEngine.Leverage
+		if leverage.IsZero() {
+			leverage = decimal.NewFromInt(1)
+		}
+		marginCost := quantity.Mul(e.lastPrice).Div(leverage)
+		e.pm.ReleaseMargin(marginCost)
+		e.tracker.EndTrade()
 		return
 	}
 
-	log.Printf("Execution Verified: Entry @ %s", entryPrice.StringFixed(2))
+	log.Printf("Execution Verified: Entry @ %s", entryPrice.StringFixed(e.client.PricePrecision))
 
 	var signalSide domain.Signal
 	if side == futures.SideTypeBuy {
@@ -667,11 +616,22 @@ func (e *BinanceTrader) openPosition(ctx context.Context, side futures.SideType,
 	}
 
 	e.tracker.StartTrade(entryPrice, signalSide)
+
+	// Set current position in PositionManager so that it can be correctly released at close
+	position := &domain.Position{
+		Symbol:          e.symbol,
+		Side:            string(signalSide),
+		Price:           entryPrice,
+		Quantity:        quantity,
+		StopLossPrice:   e.tracker.stopLoss,
+		TakeProfitPrice: e.tracker.takeProfit,
+	}
+	e.pm.SetCurrentPosition(position)
 }
 
 func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType, quantity decimal.Decimal, exitReason string) {
-	formattedQuantity := quantity.StringFixed(2)
-	order, err := e.client.PlaceOrder(ctx, e.config.Symbol, side, formattedQuantity)
+	formattedQuantity := quantity.StringFixed(e.client.QuantityPrecision)
+	order, err := e.client.PlaceOrder(ctx, e.symbol, side, formattedQuantity)
 	if err != nil {
 		if apiErr, ok := err.(*common.APIError); ok && apiErr.Code == -2019 {
 			e.hardShutdown("MARGIN_CALL")
@@ -682,10 +642,10 @@ func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType
 	}
 
 	log.Printf("Placed order: %+v", order)
-	go e.notifier.Notify(fmt.Sprintf("Position closed: %s %s @ %s. Reason: %s", side, quantity.StringFixed(2), e.lastPrice.StringFixed(2), exitReason))
+	go e.notifier.Notify(fmt.Sprintf("Position closed: %s %s @ %s. Reason: %s", side, quantity.StringFixed(e.client.QuantityPrecision), e.lastPrice.StringFixed(e.client.PricePrecision), exitReason))
 	time.Sleep(1500 * time.Millisecond)
 
-	trades, err := e.client.GetAccountTradeList(ctx, e.config.Symbol, order.OrderID)
+	trades, err := e.client.GetAccountTradeList(ctx, e.symbol, order.OrderID)
 	if err != nil {
 		log.Printf("Failed to get account trade list for exit price: %v", err)
 		return
@@ -697,7 +657,7 @@ func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType
 	}
 
 	exitPrice, _ := decimal.NewFromString(trades[0].Price)
-	log.Printf("Execution Verified: Exit @ %s", exitPrice.StringFixed(2))
+	log.Printf("Execution Verified: Exit @ %s", exitPrice.StringFixed(e.client.PricePrecision))
 
 	quantity, _ = decimal.NewFromString(order.OrigQuantity)
 	var pnl decimal.Decimal
@@ -715,7 +675,7 @@ func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType
 	}
 
 	dbTrade := map[string]interface{}{
-		"symbol":      e.config.Symbol,
+		"symbol":      e.symbol,
 		"side":        string(e.tracker.Side),
 		"entry_price": e.tracker.GetEntryPrice(),
 		"exit_price":  exitPrice,
@@ -727,7 +687,7 @@ func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType
 	e.mutex.Lock()
 	e.tradeLogs = append(e.tradeLogs, &domain.TradeLog{
 		Mode:       "testnet",
-		Symbol:     e.config.Symbol,
+		Symbol:     e.symbol,
 		Side:       string(e.tracker.Side),
 		Entry:      e.tracker.GetEntryPrice().InexactFloat64(),
 		Exit:       exitPrice.InexactFloat64(),
@@ -736,6 +696,8 @@ func (e *BinanceTrader) closePosition(ctx context.Context, side futures.SideType
 	})
 	e.mutex.Unlock()
 
+	e.pm.ReleaseBudget(e.pm.currentPosition)
+	e.pm.SetCurrentPosition(nil)
 	e.tracker.EndTrade()
 }
 
@@ -761,7 +723,7 @@ func (e *BinanceTrader) hardShutdown(status string) {
 	log.Printf("CRITICAL: Shutting down. Status: %s", status)
 	e.notifier.Notify(fmt.Sprintf("CRITICAL: Shutting down. Status: %s", status))
 
-	_ = e.client.RestClient.CancelAllOpenOrders(context.Background(), e.config.Symbol)
+	_ = e.client.RestClient.CancelAllOpenOrders(context.Background(), e.symbol)
 
 	e.mutex.Lock()
 	e.shutdownStatus = status
@@ -790,10 +752,17 @@ func (e *BinanceTrader) printDashboard() {
 	log.Println("--------------------------------------------------")
 }
 
-func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, publisher events.Publisher, startTime time.Time, sessionNumber int, availableBalance decimal.Decimal, apiKey, apiSecret string) (*BinanceTrader, error) {
+func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, publisher events.Publisher, startTime time.Time, sessionNumber int, availableBalance decimal.Decimal, apiKey, apiSecret, symbol string, sharedBudget *risk.SharedBudget) (*BinanceTrader, error) {
 	client, err := marketdata.New(cfg, apiKey, apiSecret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create exchange client: %w", err)
+	}
+
+	// Retrieve exchange info to populate PricePrecision, QuantityPrecision, and StepSize
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.RestClient.GetExchangeInfo(ctx, symbol); err != nil {
+		return nil, fmt.Errorf("failed to get exchange info for %s: %w", symbol, err)
 	}
 
 	pm := NewPositionManager(
@@ -802,16 +771,15 @@ func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, publi
 		cfg.Leverage,
 		cfg.SessionBudget,
 		client.RestClient,
-		cfg.TakeProfitPct,
-		cfg.StopLossPct,
-		cfg.BreakEvenTriggerPct,
-		cfg.TrailDistancePct,
+		cfg,
+		sharedBudget,
 	)
 
 	tracker := NewTradeTracker(cfg.TakeProfitPct, cfg.StopLossPct, cfg.ConfirmationCount, cfg.MinProfitForFlipExit)
 	emaStrategy := NewEMACrossover(cfg.EMAFast, cfg.EMASlow, 5*time.Minute, tracker)
 
 	return &BinanceTrader{
+		symbol:      symbol,
 		config:      cfg,
 		tracker:     tracker,
 		pm:          pm,
@@ -828,6 +796,7 @@ func NewBinanceTrader(cfg *config.Config, notifier notifications.Notifier, publi
 
 // PaperTrader is a trader that simulates trades without connecting to an exchange.
 type PaperTrader struct {
+	symbol          string
 	cfg             *config.Config
 	positionManager *PositionManager
 	strategy        Strategy
@@ -839,12 +808,21 @@ type PaperTrader struct {
 	cancel          context.CancelFunc
 	tradeLogs       []*domain.TradeLog
 	mu              sync.RWMutex
+	// PriceUpdateCh can be injected in tests to mock live exchange feed.
+	PriceUpdateCh chan marketdata.PriceUpdate
 }
 
 func (pt *PaperTrader) GetTradeLogs() []*domain.TradeLog {
 	pt.mu.RLock()
 	defer pt.mu.RUnlock()
 	return pt.tradeLogs
+}
+
+// GetCurrentPosition safely returns the current position for testing or status checks.
+func (pt *PaperTrader) GetCurrentPosition() *domain.Position {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+	return pt.currentPosition
 }
 
 func (pt *PaperTrader) GetStatus() domain.Status {
@@ -874,13 +852,17 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 	sessionTimer := time.NewTimer(sessionTimeout)
 	defer sessionTimer.Stop()
 
-	priceCh := make(chan marketdata.PriceUpdate)
-	client, err := marketdata.New(pt.cfg, "", "")
-	if err != nil {
-		log.Fatalf("Failed to create exchange client: %v", err)
+	var priceCh chan marketdata.PriceUpdate
+	if pt.PriceUpdateCh != nil {
+		priceCh = pt.PriceUpdateCh
+	} else {
+		priceCh = make(chan marketdata.PriceUpdate)
+		client, err := marketdata.New(pt.cfg, "", "")
+		if err != nil {
+			log.Fatalf("Failed to create exchange client: %v", err)
+		}
+		go client.Start(ctx, pt.symbol, priceCh)
 	}
-
-	go client.Start(ctx, pt.cfg.Symbol, priceCh)
 
 	for {
 		select {
@@ -899,9 +881,10 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 
 			signal, rsi := pt.strategy.Calculate(pt.candles)
 
+			pt.mu.Lock()
 			if pt.currentPosition == nil {
 				if signal == domain.SignalBuy || signal == domain.SignalSell {
-					qty, _ := pt.positionManager.CalculatePositionSize(price, pt.balance)
+					qty, _ := pt.positionManager.CalculatePositionSize(price, pt.balance, pt.strategy.TrendStrength())
 					stopLossPct := pt.positionManager.GetStopLossPct()
 					takeProfitPct := pt.positionManager.GetTakeProfitPct()
 
@@ -915,7 +898,7 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 					}
 
 					pt.currentPosition = &domain.Position{
-						Symbol:          pt.cfg.Symbol,
+						Symbol:          pt.symbol,
 						Side:            string(signal),
 						Quantity:        qty,
 						Price:           price,
@@ -935,7 +918,7 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 					pt.balance = pt.balance.Add(profit)
 
 					dbTrade := map[string]interface{}{
-						"symbol":      pt.cfg.Symbol,
+						"symbol":      pt.symbol,
 						"side":        pt.currentPosition.Side,
 						"entry_price": pt.currentPosition.Price,
 						"exit_price":  price,
@@ -944,22 +927,22 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 					}
 					pt.publisher.Publish(context.Background(), "trades", eventdef.NewEvent("trade.closed", "paper-trader", 1, dbTrade))
 
-					pt.mu.Lock()
 					pt.tradeLogs = append(pt.tradeLogs, &domain.TradeLog{
 						Mode:       "paper",
-						Symbol:     pt.cfg.Symbol,
+						Symbol:     pt.symbol,
 						Side:       pt.currentPosition.Side,
 						Entry:      pt.currentPosition.Price.InexactFloat64(),
 						Exit:       price.InexactFloat64(),
 						PnlUSDT:    profit.InexactFloat64(),
 						ExitReason: reason,
 					})
-					pt.mu.Unlock()
 
 					log.Printf("[PAPER] Closed at %s | PnL: %s | Reason: %s", price, profit, reason)
+					pt.positionManager.ReleaseBudget(pt.currentPosition)
 					pt.currentPosition = nil
 				}
 			}
+			pt.mu.Unlock()
 
 		case <-sessionTimer.C:
 			log.Printf("Session timeout reached (%d min). Paper trader stopping.", pt.cfg.SessionDurationMin)
@@ -971,12 +954,13 @@ func (pt *PaperTrader) Run(ctx context.Context) {
 	}
 }
 
-func NewPaperTrader(cfg *config.Config, publisher events.Publisher) (*PaperTrader, error) {
-	pm := NewBacktestPositionManager(cfg)
+func NewPaperTrader(cfg *config.Config, publisher events.Publisher, symbol string, sharedBudget *risk.SharedBudget) (*PaperTrader, error) {
+	pm := NewBacktestPositionManager(cfg, sharedBudget)
 	tradeTracker := NewTradeTracker(cfg.TakeProfitPct, cfg.StopLossPct, cfg.ConfirmationCount, cfg.MinProfitForFlipExit)
 	strategy := NewEMACrossover(cfg.EMAFast, cfg.EMASlow, 0, tradeTracker)
 
 	return &PaperTrader{
+		symbol:          symbol,
 		cfg:             cfg,
 		positionManager: pm,
 		strategy:        strategy,

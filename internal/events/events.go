@@ -58,3 +58,12 @@ func (p *natsPublisher) Publish(ctx context.Context, subject string, event event
 func (p *natsPublisher) Close() {
 	p.nc.Close()
 }
+
+// NullPublisher is a no-op publisher used when NATS is unavailable.
+type NullPublisher struct{}
+
+func (p *NullPublisher) Publish(ctx context.Context, subject string, event eventdef.Event) error {
+	return nil
+}
+
+func (p *NullPublisher) Close() {}

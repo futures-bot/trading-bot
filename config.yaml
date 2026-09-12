@@ -1,6 +1,11 @@
-symbol: SOLUSDT
+symbols: 
+  - SOLUSDT
+  - XRPUSDT
+  - BTCUSDT
+  - BNBUSDT
+  - ETHUSDT
 leverage: 10
-session_budget: 50.0
+session_budget: 10.0
 ema_fast: 9
 ema_slow: 21
 min_ema_gap: 0.001

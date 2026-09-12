@@ -1,0 +1,2 @@
+INSERT INTO sessions (created_at, updated_at, start_time, end_time, start_balance, end_balance, total_profit, status, mode) VALUES (NOW(), NOW(), NOW() - INTERVAL '1 hour', NOW(), 1000.0, 1050.0, 50.0, 'completed', 'paper');
+INSERT INTO trades (created_at, updated_at, session_id, symbol, time, side, quantity, entry, exit, pnl_usdt, exit_reason) VALUES (NOW(), NOW(), 1, 'BTCUSDT', NOW() - INTERVAL '30 minutes', 'buy', 0.1, 50000.0, 50500.0, 50.0, 'TAKE_PROFIT');

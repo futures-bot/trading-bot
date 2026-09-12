@@ -41,7 +41,12 @@ type HistoricalData struct {
 }
 
 func (r *Runner) Start(ctx context.Context) {
-	go r.Run(r.cfg.BacktestFile)
+	// If Start is used generically, we might need a default symbol, assuming first symbol for now.
+	var sym string
+	if len(r.cfg.Symbols) > 0 {
+		sym = r.cfg.Symbols[0]
+	}
+	go r.Run(r.cfg.BacktestFile, sym)
 }
 
 func (r *Runner) Stop() {}
@@ -50,8 +55,8 @@ func (r *Runner) GetStatus() domain.Status {
 	return domain.Status{}
 }
 
-func (r *Runner) Run(filePath string) error {
-	log.Printf("Backtest starting: file=%s symbol=%s", filePath, r.cfg.Symbol)
+func (r *Runner) Run(filePath string, symbol string) error {
+	log.Printf("Backtest starting: file=%s symbol=%s", filePath, symbol)
 
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -74,10 +79,10 @@ func (r *Runner) Run(filePath string) error {
 		return err
 	}
 
-	return r.RunFromCandles(candles)
+	return r.RunFromCandles(candles, symbol)
 }
 
-func (r *Runner) RunFromCandles(candles []domain.Candle) error {
+func (r *Runner) RunFromCandles(candles []domain.Candle, symbol string) error {
 	var window []domain.Candle
 
 	totalTicks := len(candles)
@@ -102,7 +107,7 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 
 		if r.currentPosition == nil {
 			if tick > lastTradeTick && (signal == domain.SignalBuy || signal == domain.SignalSell) {
-				qty, err := r.positionManager.CalculatePositionSize(candle.Close, r.positionManager.Balance())
+				qty, err := r.positionManager.CalculatePositionSize(candle.Close, r.positionManager.Balance(), r.strategy.TrendStrength())
 				if err != nil {
 					continue
 				}
@@ -119,7 +124,7 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 				}
 
 				r.currentPosition = &domain.Position{
-					Symbol:          r.cfg.Symbol,
+					Symbol:          symbol,
 					Side:            string(signal),
 					Quantity:        qty,
 					Price:           candle.Close,
@@ -140,7 +145,7 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 				r.positionManager.UpdateBalance(profit)
 
 				dbTrade := &domain.Trade{
-					Symbol:     r.cfg.Symbol,
+					Symbol:     symbol,
 					Side:       r.currentPosition.Side,
 					EntryPrice: r.currentPosition.Price,
 					ExitPrice:  candle.Close,
@@ -167,7 +172,7 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 
 	session := map[string]interface{}{
 		"mode":          "backtest",
-		"symbol":        r.cfg.Symbol,
+		"symbol":        symbol,
 		"total_trades":  totalTrades,
 		"wins":          wins,
 		"losses":        losses,
@@ -183,7 +188,7 @@ func (r *Runner) RunFromCandles(candles []domain.Candle) error {
 
 	fmt.Println()
 	fmt.Println("==================== BACKTEST RESULTS ====================")
-	fmt.Printf("  Symbol:          %s\n", r.cfg.Symbol)
+	fmt.Printf("  Symbol:          %s\n", symbol)
 	fmt.Printf("  Ticks Processed: %d\n", totalTicks)
 	fmt.Println("----------------------------------------------------------")
 	fmt.Printf("  Total Trades:    %d\n", totalTrades)

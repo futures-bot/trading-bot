@@ -3,6 +3,7 @@ package trading
 import (
 	"testing"
 
+	"trading-bot/internal/config"
 	"trading-bot/internal/marketdata"
 	"trading-bot/internal/trading/domain"
 
@@ -10,26 +11,32 @@ import (
 )
 
 func TestPositionManager(t *testing.T) {
+	cfg := &config.Config{
+		TakeProfitPct:       0.02,
+		StopLossPct:         0.01,
+		BreakEvenTriggerPct: 0.01,
+		TrailDistancePct:    0.005,
+		Leverage:            10,
+		SessionBudget:       100.0,
+	}
 	pm := NewPositionManager(
 		decimal.NewFromInt(1000),
 		decimal.NewFromFloat(0.1),
 		10,
 		100,
 		&marketdata.RestClient{StepSize: decimal.NewFromFloat(0.01)},
-		0.02,
-		0.01,
-		0.01,
-		0.005,
+		cfg,
+		nil,
 	)
 
 	// Test CalculatePositionSize
 	price := decimal.NewFromInt(100)
-	qty, err := pm.CalculatePositionSize(price, decimal.NewFromInt(1000))
+	qty, err := pm.CalculatePositionSize(price, decimal.NewFromInt(1000), decimal.NewFromFloat(0.002))
 	if err != nil {
 		t.Errorf("Error calculating position size: %v", err)
 	}
-	if !qty.Equal(decimal.NewFromInt(1)) {
-		t.Errorf("Expected quantity to be 1, got %s", qty)
+	if !qty.Equal(decimal.NewFromFloat(10.0)) {
+		t.Errorf("Expected quantity to be 10.0, got %s", qty)
 	}
 
 	// Test UpdateBalance

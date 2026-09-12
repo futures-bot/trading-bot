@@ -11,8 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"trading-bot/internal/database"
 	"trading-bot/internal/events"
 	"trading-bot/shared/eventdef"
+
+	"github.com/shopspring/decimal"
 )
 
 const binanceFuturesKlineURL = "https://testnet.binancefuture.com/fapi/v1/klines"
@@ -20,21 +23,24 @@ const binanceFuturesKlineURL = "https://testnet.binancefuture.com/fapi/v1/klines
 // Scraper is responsible for scraping historical kline data from Binance.
 type Scraper struct {
 	publisher events.Publisher
+	repo      database.Repository
 	client    *http.Client
 	url       string
 }
 
-func New(publisher events.Publisher) *Scraper {
+func New(publisher events.Publisher, repo database.Repository) *Scraper {
 	return &Scraper{
 		publisher: publisher,
+		repo:      repo,
 		client:    &http.Client{Timeout: 30 * time.Second},
 		url:       binanceFuturesKlineURL,
 	}
 }
 
-func newWithClient(publisher events.Publisher, client *http.Client, url string) *Scraper {
+func newWithClient(publisher events.Publisher, repo database.Repository, client *http.Client, url string) *Scraper {
 	return &Scraper{
 		publisher: publisher,
+		repo:      repo,
 		client:    client,
 		url:       url,
 	}
@@ -123,13 +129,36 @@ func (s *Scraper) scrapeSymbol(ctx context.Context, symbol, interval string, hou
 			}
 
 			if len(klines) > 0 {
+				var dbKlines []database.Kline
 				for _, kline := range klines {
-					s.publisher.Publish(context.Background(), "klines."+c.Symbol, eventdef.NewEvent("kline.new", "scraper", 1, kline))
+					if s.publisher != nil {
+						s.publisher.Publish(context.Background(), "klines."+c.Symbol, eventdef.NewEvent("kline.new", "scraper", 1, kline))
+					}
+					
+					dbKlines = append(dbKlines, database.Kline{
+						Symbol:    kline.Symbol,
+						Interval:  kline.Interval,
+						OpenTime:  time.UnixMilli(kline.OpenTime),
+						CloseTime: time.UnixMilli(kline.CloseTime),
+						Open:      decimal.NewFromFloat(kline.Open),
+						High:      decimal.NewFromFloat(kline.High),
+						Low:       decimal.NewFromFloat(kline.Low),
+						Close:     decimal.NewFromFloat(kline.Close),
+						Volume:    decimal.NewFromFloat(kline.Volume),
+					})
 				}
+
+				if s.repo != nil && len(dbKlines) > 0 {
+					err := s.repo.SaveKlines(dbKlines)
+					if err != nil {
+						log.Printf("[%s] failed to save klines to DB: %v", c.Symbol, err)
+					}
+				}
+
 				mu.Lock()
 				totalSaved += len(klines)
 				mu.Unlock()
-				log.Printf("[%s] chunk %d/%d: published %d klines", c.Symbol, idx+1, len(chunks), len(klines))
+				log.Printf("[%s] chunk %d/%d: processed %d klines", c.Symbol, idx+1, len(chunks), len(klines))
 			}
 		}(i, chunk)
 	}

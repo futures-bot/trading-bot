@@ -25,6 +25,10 @@ func (s *MockStrategy) Calculate(candles []domain.Candle) (domain.Signal, decima
 
 func (s *MockStrategy) UpdateLastTradeTime() {}
 
+func (s *MockStrategy) TrendStrength() decimal.Decimal {
+	return decimal.Zero
+}
+
 // MockPublisher is a mock implementation of the events.Publisher interface.
 type MockPublisher struct {
 	PublishedEvents map[string]eventdef.Event
@@ -62,14 +66,14 @@ func TestRunner(t *testing.T) {
 
 	cfg := &config.Config{
 		BacktestFile: tmpfile.Name(),
-		Symbol:       "BTCUSDT",
+		Symbols:      []string{"BTCUSDT"},
 	}
 	strategy := &MockStrategy{Signal: domain.SignalBuy}
-	pm := trading.NewBacktestPositionManager(cfg)
+	pm := trading.NewBacktestPositionManager(cfg, nil)
 	publisher := &MockPublisher{}
 
 	runner := NewRunner(strategy, pm, cfg, publisher)
-	if err := runner.Run(tmpfile.Name()); err != nil {
+	if err := runner.Run(tmpfile.Name(), "BTCUSDT"); err != nil {
 		t.Fatalf("Error running backtest: %v", err)
 	}
 
